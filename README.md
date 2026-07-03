@@ -14,7 +14,7 @@
 | M1.4 TTS 集成 | ✅ | ElevenLabs eleven_flash_v2_5 WebSocket 流式 |
 | M1.5 PC 客户端 | ✅ | 按键录音 → 上传 → 播放 TTS |
 | M1.6 部署 VPS | 🟡 | 配置就绪（Docker/systemd/nginx），待实机部署 |
-| M2 唤醒词接入 | 🟡 | Porcupine 代码就绪，需 .ppn 文件 + AccessKey |
+| M2 唤醒词接入 | ✅ | Porcupine（Android + PC），支持降级模式 |
 | M3 双端同步 | ⬜ | 多设备连接管理 + 话轮仲裁 |
 | M4 打磨 | ✅ | 断线重连 + 能量过滤 + 工具集 + 取消支持 |
 
@@ -76,8 +76,15 @@ python test_stt.py            # STT 管线测试
 python test_llm.py            # LLM + Tool Calling 测试
 
 # 6. PC 客户端交互
-python pc_client.py                        # localhost
+python pc_client.py                        # localhost (Enter 键触发)
+python pc_client.py --wake                 # 启用唤醒词 "贾维斯"
 python pc_client.py wss://your-vps/ws      # 远程 VPS
+
+# 7. 唤醒词设置（可选）
+# a) 注册 https://console.picovoice.ai/
+# b) 训练唤醒词 "贾维斯"，下载 .ppn 文件
+# c) 放入 models/jarvis.ppn
+# d) 设置环境变量: export PORCUPINE_ACCESS_KEY=your-key
 ```
 
 ## PC 客户端操作

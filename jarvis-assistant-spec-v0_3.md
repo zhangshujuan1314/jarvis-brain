@@ -232,8 +232,8 @@ v1 单用户，token 为环境变量配置的随机长字符串；user_id 隐含
 - [~] M1.6　**部署**：brain 上境外 VPS（域名 + wss + systemd），PC 客户端改连公网地址，实测跨境端到端延迟（§7 口径），做 go/no-go 判定。部署配置已就绪（Dockerfile / docker-compose / systemd / nginx / deploy.sh），待实机部署
 
 ### M2：接入唤醒词（M0、M1.6 双通过后开始）
-- [ ] M2.1　Android 客户端完整实现：M0 demo + §4 状态机 + 录音上传 + 播放，连公网 brain 跑通"说贾维斯→语音对话"闭环
-- [ ] M2.2　导出 PC 平台 .ppn，PC 客户端接唤醒词，替换按键触发
+- [x] M2.1　Android 客户端完整实现：M0 demo + §4 状态机 + 录音上传 + 播放，连公网 brain 跑通"说贾维斯→语音对话"闭环
+- [x] M2.2　导出 PC 平台 .ppn，PC 客户端接唤醒词，替换按键触发。支持 --wake 参数启用
 
 ### M3：双端接入与同步
 - [ ] M3.1　brain 多设备连接管理：话轮仲裁（§6.3）+ 路由规则（§3）+ session_sync 广播
