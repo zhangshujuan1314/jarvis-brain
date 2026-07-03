@@ -14,6 +14,7 @@ Design:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -103,20 +104,23 @@ _EXPR_RE = re.compile(r"^[0-9+\-*/().%\s,a-z_]+$")
 
 # ── Tool execution ───────────────────────────────────────────────
 
-async def execute(name: str, args: dict[str, Any]) -> str:
-    """Execute a tool by name, return result as JSON string."""
+async def execute(name: str, args: dict[str, Any], timeout: float = 10.0) -> str:
+    """Execute a tool by name with per-tool timeout. Returns JSON string."""
     try:
         if name == "get_weather":
-            return await _get_weather(args.get("city", ""))
+            return await asyncio.wait_for(_get_weather(args.get("city", "")), timeout=timeout)
         elif name == "calculate":
             return _calculate(args.get("expression", ""))
         elif name == "get_datetime":
             return _get_datetime(args.get("timezone_offset", 8))
         elif name == "search_web":
-            return await _search_web(args.get("query", ""))
+            return await asyncio.wait_for(_search_web(args.get("query", "")), timeout=timeout)
         else:
             logger.warning("unknown tool: %s", name)
             return json.dumps({"error": f"unknown tool: {name}"})
+    except asyncio.TimeoutError:
+        logger.error("tool %s timed out after %.1fs", name, timeout)
+        return json.dumps({"error": f"tool {name} timed out"})
     except Exception as e:
         logger.error("tool %s error: %s", name, e)
         return json.dumps({"error": str(e)})

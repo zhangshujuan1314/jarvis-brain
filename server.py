@@ -6,17 +6,22 @@ import asyncio
 import json
 import os
 import struct
+import sys
 import time
 import logging
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from stt import STTEngine
 from llm import LLMEngine
 from tts import TTSEngine
+from config import validate_all, print_config_summary
 
 load_dotenv()
 
@@ -29,8 +34,16 @@ logger = logging.getLogger("jarvis-brain")
 JARVIS_TOKEN = os.environ.get("JARVIS_TOKEN", "dev-token-change-me")
 AUTH_TIMEOUT = 5.0
 WS_PING_INTERVAL = 30.0  # Send WS ping every 30s to keep connection alive
+RATE_LIMIT_TURNS = 10    # Max turns per device per minute
+RATE_LIMIT_WINDOW = 60.0 # Rate limit window in seconds
 
 app = FastAPI(title="Jarvis Brain", version="0.4.0")
+
+# Startup validation
+if not validate_all():
+    logger.error("Configuration validation failed — check logs above")
+    sys.exit(1)
+print_config_summary()
 
 stt = STTEngine()
 llm = LLMEngine()
@@ -97,6 +110,7 @@ class ConnectionManager:
         self._devices: dict[str, WebSocket] = {}
         self._history: dict[str, list[dict]] = {}  # Per-device conversation history
         self._last_turn: dict[str, tuple[str, str]] = {}  # Last (user, assistant) per device
+        self._turn_times: dict[str, list[float]] = {}  # Rate limiting: turn timestamps
 
     async def register(self, ws: WebSocket, device_id: str):
         old = self._devices.pop(device_id, None)
@@ -157,6 +171,20 @@ class ConnectionManager:
     def clear_history(self, device_id: str):
         self._history.pop(device_id, None)
 
+    def check_rate_limit(self, device_id: str) -> bool:
+        """Returns True if the device is within rate limits."""
+        now = time.time()
+        if device_id not in self._turn_times:
+            self._turn_times[device_id] = []
+        # Clean old entries
+        self._turn_times[device_id] = [
+            t for t in self._turn_times[device_id] if now - t < RATE_LIMIT_WINDOW
+        ]
+        if len(self._turn_times[device_id]) >= RATE_LIMIT_TURNS:
+            return False
+        self._turn_times[device_id].append(now)
+        return True
+
     @property
     def count(self) -> int:
         return len(self._devices)
@@ -166,9 +194,22 @@ manager = ConnectionManager()
 
 
 # ── Routes ────────────────────────────────────────────────────────
+@app.get("/api")
+async def api_info():
+    return {"service": "jarvis-brain", "version": "0.4.0", "devices": manager.count}
+
 @app.get("/")
 async def root():
-    return {"service": "jarvis-brain", "version": "0.3.0", "devices": manager.count}
+    """Serve web client if available, otherwise redirect to API."""
+    static_index = Path(__file__).parent / "static" / "index.html"
+    if static_index.exists():
+        return FileResponse(static_index)
+    return {"service": "jarvis-brain", "version": "0.4.0", "devices": manager.count}
+
+# Mount static files
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 @app.get("/health")
 async def health():
@@ -287,6 +328,14 @@ async def _handle_text(ws: WebSocket, device_id: str, raw: str):
 
 async def _on_wake(ws: WebSocket, device_id: str, msg: dict):
     turn_id = msg.get("turn_id", 0)
+
+    if not manager.check_rate_limit(device_id):
+        await _send(ws, {
+            "type": "turn_rejected", "turn_id": turn_id,
+            "reason": "rate_limit_exceeded",
+        })
+        logger.warning("rate limit exceeded for %s", device_id)
+        return
 
     if not turn_mgr.acquire(device_id, turn_id):
         await _send(ws, {

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis 语音助手</title>
+<style>
+  :root { --bg: #0a0a0f; --card: #12121a; --accent: #4f8cff; --green: #22c55e; --red: #ef4444; --text: #e2e2e2; --dim: #666; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+  .container { max-width: 600px; width: 100%; padding: 20px; }
+  h1 { text-align: center; font-size: 1.5em; margin: 20px 0; color: var(--accent); }
+  .status { text-align: center; padding: 8px; border-radius: 8px; margin-bottom: 16px; font-size: 0.9em; }
+  .status.connected { background: #0f2a1a; color: var(--green); }
+  .status.disconnected { background: #2a0f0f; color: var(--red); }
+  .status.recording { background: #1a2a0f; color: #facc15; }
+  .controls { display: flex; justify-content: center; gap: 12px; margin: 20px 0; }
+  button { padding: 12px 28px; border: none; border-radius: 12px; font-size: 1em; cursor: pointer; transition: all 0.2s; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #btn-record { background: var(--green); color: #000; font-weight: 600; }
+  #btn-record.active { background: var(--red); animation: pulse 1s infinite; }
+  #btn-cancel { background: #333; color: var(--text); }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  .chat { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .msg { padding: 10px 14px; border-radius: 12px; max-width: 85%; font-size: 0.95em; line-height: 1.4; }
+  .msg.user { background: #1a2744; align-self: flex-end; }
+  .msg.assistant { background: #1a1a2e; align-self: flex-start; }
+  .msg.system { background: transparent; color: var(--dim); text-align: center; font-size: 0.8em; align-self: center; }
+  .msg.error { background: #2a0f0f; color: var(--red); text-align: center; font-size: 0.85em; align-self: center; }
+  .config { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .config label { display: block; font-size: 0.85em; color: var(--dim); margin-bottom: 4px; }
+  .config input { width: 100%; padding: 8px; border: 1px solid #333; border-radius: 6px; background: #1a1a2e; color: var(--text); font-size: 0.9em; margin-bottom: 8px; }
+  .tools { background: var(--card); border-radius: 12px; padding: 12px; margin-top: 16px; }
+  .tools h3 { font-size: 0.85em; color: var(--dim); margin-bottom: 8px; }
+  .tool-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tool-tag { background: #1a2744; color: var(--accent); padding: 4px 10px; border-radius: 16px; font-size: 0.8em; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🧠 Jarvis 语音助手</h1>
+
+  <div class="config">
+    <label>WebSocket 地址</label>
+    <input type="text" id="ws-uri" value="ws://localhost:8000/ws" placeholder="wss://your-vps/ws">
+    <label>Token</label>
+    <input type="password" id="token" value="dev-token-change-me" placeholder="your-token">
+  </div>
+
+  <div id="status" class="status disconnected">未连接</div>
+
+  <div class="controls">
+    <button id="btn-connect" onclick="toggleConnection()">连接</button>
+    <button id="btn-record" disabled onclick="toggleRecord()">🎤 开始录音</button>
+    <button id="btn-cancel" disabled onclick="cancelTurn()">取消</button>
+  </div>
+
+  <div class="chat" id="chat"></div>
+
+  <div class="tools">
+    <h3>可用工具</h3>
+    <div class="tool-list">
+      <span class="tool-tag">🌤 天气</span>
+      <span class="tool-tag">🔢 计算</span>
+      <span class="tool-tag">📅 日期</span>
+      <span class="tool-tag">🔍 搜索</span>
+    </div>
+  </div>
+</div>
+
+<script>
+let ws = null;
+let mediaStream = null;
+let audioContext = null;
+let processor = null;
+let turnId = 0;
+let state = 'idle'; // idle, recording, waiting, playing
+let audioQueue = [];
+let isPlaying = false;
+
+const SAMPLE_RATE = 16000;
+const CHUNK_SAMPLES = 1600; // 100ms
+
+function setStatus(text, cls) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = 'status ' + cls;
+}
+
+function addMsg(text, type) {
+  const chat = document.getElementById('chat');
+  const div = document.createElement('div');
+  div.className = 'msg ' + type;
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function toggleConnection() {
+  if (ws) {
+    ws.close();
+    return;
+  }
+  const uri = document.getElementById('ws-uri').value;
+  const token = document.getElementById('token').value;
+
+  setStatus('连接中...', 'disconnected');
+  ws = new WebSocket(uri);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'auth', token, device_id: 'web-' + Math.random().toString(36).slice(2, 6), platform: 'web' }));
+  };
+
+  ws.onmessage = (e) => {
+    if (e.data instanceof Blob) { handleBinary(e.data); return; }
+    const msg = JSON.parse(e.data);
+    handleMsg(msg);
+  };
+
+  ws.onclose = () => {
+    ws = null;
+    setStatus('已断开', 'disconnected');
+    document.getElementById('btn-connect').textContent = '连接';
+    document.getElementById('btn-record').disabled = true;
+    document.getElementById('btn-cancel').disabled = true;
+    state = 'idle';
+  };
+
+  ws.onerror = () => setStatus('连接错误', 'disconnected');
+}
+
+function handleMsg(msg) {
+  switch (msg.type) {
+    case 'auth_ok':
+      setStatus('已连接', 'connected');
+      document.getElementById('btn-connect').textContent = '断开';
+      document.getElementById('btn-record').disabled = false;
+      break;
+    case 'auth_fail':
+      setStatus('认证失败: ' + msg.reason, 'disconnected');
+      ws.close();
+      break;
+    case 'turn_accepted':
+      break;
+    case 'turn_rejected':
+      addMsg('请求被拒绝: ' + msg.reason, 'error');
+      state = 'idle';
+      updateButtons();
+      break;
+    case 'utterance_end':
+      if (state === 'recording') stopRecording();
+      break;
+    case 'stt_result':
+      addMsg(msg.text, 'user');
+      break;
+    case 'state':
+      if (msg.value === 'thinking') { setStatus('🧠 思考中...', 'connected'); state = 'waiting'; }
+      else if (msg.value === 'speaking') { setStatus('🔊 播放中...', 'connected'); state = 'playing'; }
+      else if (msg.value === 'cancelled') { state = 'idle'; setStatus('已连接', 'connected'); }
+      updateButtons();
+      break;
+    case 'tts_done':
+      playQueue();
+      break;
+    case 'error':
+      addMsg('错误 [' + msg.stage + ']: ' + msg.message, 'error');
+      state = 'idle';
+      setStatus('已连接', 'connected');
+      updateButtons();
+      break;
+    case 'session_sync':
+      if (msg.assistant_text) addMsg('[同步] ' + msg.assistant_text, 'system');
+      break;
+    case 'pong':
+      break;
+  }
+}
+
+async function handleBinary(blob) {
+  const buf = await blob.arrayBuffer();
+  const data = new Uint8Array(buf);
+  if (data.length < 6 || data[0] !== 0x02) return;
+  const pcm = data.slice(5);
+  audioQueue.push(pcm);
+  if (state === 'playing' && !isPlaying) playQueue();
+}
+
+function playQueue() {
+  if (isPlaying || audioQueue.length === 0) return;
+  isPlaying = true;
+
+  // Concatenate all queued PCM
+  const totalLen = audioQueue.reduce((s, c) => s + c.length, 0);
+  const merged = new Uint8Array(totalLen);
+  let off = 0;
+  for (const chunk of audioQueue) { merged.set(chunk, off); off += chunk.length; }
+  audioQueue = [];
+
+  // Convert PCM16 to float32
+  const samples = new Float32Array(merged.length / 2);
+  const view = new DataView(merged.buffer);
+  for (let i = 0; i < samples.length; i++) {
+    samples[i] = view.getInt16(i * 2, true) / 32768;
+  }
+
+  // Play via AudioContext
+  if (!audioContext) audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+  const buffer = audioContext.createBuffer(1, samples.length, SAMPLE_RATE);
+  buffer.getChannelData(0).set(samples);
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+  source.onended = () => {
+    isPlaying = false;
+    if (audioQueue.length > 0) { playQueue(); return; }
+    state = 'idle';
+    setStatus('已连接', 'connected');
+    updateButtons();
+    addMsg('✓ 回复完毕', 'system');
+  };
+  source.start();
+}
+
+function updateButtons() {
+  const btn = document.getElementById('btn-record');
+  const btnCancel = document.getElementById('btn-cancel');
+  if (state === 'idle') {
+    btn.textContent = '🎤 开始录音';
+    btn.classList.remove('active');
+    btn.disabled = !ws;
+    btnCancel.disabled = true;
+  } else if (state === 'recording') {
+    btn.textContent = '⏹ 停止录音';
+    btn.classList.add('active');
+    btnCancel.disabled = false;
+  } else {
+    btn.textContent = '🎤 开始录音';
+    btn.classList.remove('active');
+    btn.disabled = true;
+    btnCancel.disabled = false;
+  }
+}
+
+async function toggleRecord() {
+  if (state === 'idle') {
+    await startRecording();
+  } else if (state === 'recording') {
+    stopRecording();
+  }
+}
+
+async function startRecording() {
+  if (!ws) return;
+  turnId++;
+  state = 'recording';
+  setStatus('🎤 录音中...', 'recording');
+  updateButtons();
+
+  ws.send(JSON.stringify({ type: 'wake_event', turn_id: turnId }));
+
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: SAMPLE_RATE, channelCount: 1 } });
+    audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    processor = audioContext.createScriptProcessor(CHUNK_SAMPLES, 1, 1);
+
+    processor.onaudioprocess = (e) => {
+      if (state !== 'recording') return;
+      const float32 = e.inputBuffer.getChannelData(0);
+      const pcm16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        pcm16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32767));
+      }
+      const frame = new Uint8Array(5 + pcm16.length * 2);
+      frame[0] = 0x01;
+      new DataView(frame.buffer).setUint32(1, turnId, true);
+      frame.set(new Uint8Array(pcm16.buffer), 5);
+      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+    };
+
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+  } catch (e) {
+    addMsg('麦克风访问失败: ' + e.message, 'error');
+    state = 'idle';
+    updateButtons();
+  }
+}
+
+function stopRecording() {
+  if (processor) { processor.disconnect(); processor = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (state !== 'recording') return;
+
+  state = 'waiting';
+  setStatus('⏳ 等待回复...', 'connected');
+  updateButtons();
+  ws.send(JSON.stringify({ type: 'audio_done', turn_id: turnId }));
+}
+
+function cancelTurn() {
+  if (!ws || state === 'idle') return;
+  ws.send(JSON.stringify({ type: 'cancel', turn_id: turnId }));
+  if (processor) { processor.disconnect(); processor = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  audioQueue = [];
+  if (isPlaying && audioContext) { audioContext.close(); audioContext = null; isPlaying = false; }
+  state = 'idle';
+  setStatus('已连接', 'connected');
+  updateButtons();
+  addMsg('已取消', 'system');
+}
+</script>
+</body>
+</html>
