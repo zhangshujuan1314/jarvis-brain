@@ -22,13 +22,11 @@ from stt import STTEngine
 from llm import LLMEngine
 from tts import TTSEngine
 from config import validate_all, print_config_summary
+from structured_logging import setup_logging
 
 load_dotenv()
+setup_logging()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
 logger = logging.getLogger("jarvis-brain")
 
 JARVIS_TOKEN = os.environ.get("JARVIS_TOKEN", "dev-token-change-me")
@@ -523,7 +521,8 @@ async def _broadcast_session_sync(
         "user_text": user_text,
         "assistant_text": assistant_text,
     }
-    for did, ws in manager._devices.items():
+    # Iterate over a snapshot — _devices may change during await
+    for did, ws in list(manager._devices.items()):
         if did != source_device:
             try:
                 await _send(ws, sync_msg)
