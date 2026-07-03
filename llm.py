@@ -53,6 +53,9 @@ class LLMEngine:
         if not self._api_key:
             logger.warning("ANTHROPIC_API_KEY not set — LLM calls will fail")
 
+        # Cache the client for reuse across turns
+        self._client = anthropic.AsyncAnthropic(api_key=self._api_key) if self._api_key else None
+
         logger.info("LLM ready: model=%s", self._model)
 
     async def stream(
@@ -68,14 +71,14 @@ class LLMEngine:
         - Only yields text from the FINAL round (no tool calls pending)
         - Each yielded chunk is a complete sentence ready for TTS
         """
-        if not self._api_key:
+        if not self._client:
             yield "抱歉，语言模型未配置。"
             return
 
         messages = list(history or [])
         messages.append({"role": "user", "content": user_text})
 
-        client = anthropic.AsyncAnthropic(api_key=self._api_key)
+        client = self._client
 
         try:
             for _round in range(5):  # Max 5 tool-calling rounds

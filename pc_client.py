@@ -153,11 +153,14 @@ class PCClient:
                 print(f"\n{C_YELLOW}[Enter] 开始录音 | Ctrl+C 退出{C_RESET}")
                 await asyncio.get_running_loop().run_in_executor(None, input)
                 await self._start_recording(ws)
-            else:
-                # During recording, wait for Enter to stop
+            elif self.state == RECORDING:
+                print(f"{C_YELLOW}[Enter] 停止录音{C_RESET}")
                 await asyncio.get_running_loop().run_in_executor(None, input)
-                if self.state == RECORDING:
-                    await self._stop_recording(ws)
+                await self._stop_recording(ws)
+            elif self.state in (WAITING, PLAYING):
+                print(f"{C_YELLOW}[Enter] 取消当前回复{C_RESET}")
+                await asyncio.get_running_loop().run_in_executor(None, input)
+                await self._cancel_turn(ws)
 
     async def _start_recording(self, ws):
         self.turn_id += 1
@@ -219,6 +222,13 @@ class PCClient:
         self.state = WAITING
         print(f"{C_CYAN}⏳ 等待回复...{C_RESET}")
         await ws.send(json.dumps({"type": "audio_done", "turn_id": self.turn_id}))
+
+    async def _cancel_turn(self, ws):
+        """Cancel the current turn (during WAITING or PLAYING)."""
+        print(f"{C_YELLOW}⊘ 已取消{C_RESET}")
+        await ws.send(json.dumps({"type": "cancel", "turn_id": self.turn_id}))
+        self.state = IDLE
+        self._audio_buf.clear()
 
     async def _receiver(self, ws):
         """Receive and handle server messages."""

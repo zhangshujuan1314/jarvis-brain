@@ -42,12 +42,15 @@ class TurnManager:
 
     Concurrency fix: _finalized flag prevents _finalize_turn from running twice
     when both VAD utterance_end and client audio_done arrive for the same turn.
+
+    Cancel support: _cancel_event is checked by the pipeline to abort mid-turn.
     """
 
     def __init__(self):
         self.current_device: Optional[str] = None
         self.current_turn_id: Optional[int] = None
         self._finalized: bool = False
+        self._cancel_event: asyncio.Event = asyncio.Event()
 
     def acquire(self, device_id: str, turn_id: int) -> bool:
         if self.current_device is not None and self.current_device != device_id:
@@ -55,6 +58,7 @@ class TurnManager:
         self.current_device = device_id
         self.current_turn_id = turn_id
         self._finalized = False
+        self._cancel_event.clear()
         stt.start_turn()
         return True
 
@@ -65,10 +69,19 @@ class TurnManager:
         self._finalized = True
         return True
 
+    def cancel(self):
+        """Signal cancellation for the current turn."""
+        self._cancel_event.set()
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
+
     def release(self):
         self.current_device = None
         self.current_turn_id = None
         self._finalized = False
+        self._cancel_event.clear()
 
 
 turn_mgr = TurnManager()
@@ -290,6 +303,7 @@ async def _on_cancel(ws: WebSocket, device_id: str, msg: dict):
     turn_id = msg.get("turn_id", 0)
     if turn_mgr.current_device != device_id or turn_mgr.current_turn_id != turn_id:
         return
+    turn_mgr.cancel()
     turn_mgr.release()
     await _send(ws, {"type": "state", "turn_id": turn_id, "value": "cancelled"})
     logger.info("turn %d cancelled by %s", turn_id, device_id)
@@ -342,7 +356,17 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
     })
     logger.info("turn %d: stt_result=%r (%.1fs)", turn_id, seg.text, seg.duration)
 
+    # Skip LLM if speech was empty/inaudible
+    if not seg.text.strip():
+        await _send(ws, {"type": "state", "turn_id": turn_id, "value": "done"})
+        turn_mgr.release()
+        return
+
     # 2. LLM → TTS streaming pipeline
+    if turn_mgr.is_cancelled:
+        turn_mgr.release()
+        return
+
     await _send(ws, {"type": "state", "turn_id": turn_id, "value": "thinking"})
 
     history = manager.get_history(device_id)
@@ -351,6 +375,10 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
 
     try:
         async for sentence in llm.stream(seg.text, history=history):
+            if turn_mgr.is_cancelled:
+                logger.info("turn %d: cancelled during LLM streaming", turn_id)
+                break
+
             full_response += sentence
 
             # First sentence: notify client that TTS is starting
@@ -359,11 +387,16 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
 
             # Stream TTS audio for this sentence
             async for audio_chunk in tts.speak(sentence):
+                if turn_mgr.is_cancelled:
+                    break
                 if audio_chunk:
                     # §5 binary frame: [0x02][turn_id:4 LE][PCM data]
                     frame = b"\x02" + struct.pack("<I", turn_id) + audio_chunk
                     await ws.send_bytes(frame)
                     tts_chunk_count += 1
+
+            if turn_mgr.is_cancelled:
+                break
 
     except Exception as e:
         logger.error("pipeline error turn %d: %s", turn_id, e)
@@ -377,14 +410,18 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
         return
 
     # 3. Update conversation history & send done
-    if full_response:
+    if full_response and not turn_mgr.is_cancelled:
         manager.add_history(device_id, seg.text, full_response)
 
     # 4. Broadcast session_sync for cross-device continuity (§6.2)
-    await _broadcast_session_sync(device_id, turn_id, seg.text, full_response)
+    if not turn_mgr.is_cancelled:
+        await _broadcast_session_sync(device_id, turn_id, seg.text, full_response)
+        await _send(ws, {"type": "tts_done", "turn_id": turn_id})
+        logger.info("turn %d: done (%d audio chunks)", turn_id, tts_chunk_count)
+    else:
+        await _send(ws, {"type": "state", "turn_id": turn_id, "value": "cancelled"})
+        logger.info("turn %d: cancelled", turn_id)
 
-    await _send(ws, {"type": "tts_done", "turn_id": turn_id})
-    logger.info("turn %d: done (%d audio chunks)", turn_id, tts_chunk_count)
     turn_mgr.release()
 
 
