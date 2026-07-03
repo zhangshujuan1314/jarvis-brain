@@ -14,7 +14,7 @@
 | M1.4 TTS 集成 | ✅ | ElevenLabs eleven_flash_v2_5 WebSocket 流式 |
 | M1.5 PC 客户端 | ✅ | 按键录音 → 上传 → 播放 TTS |
 | M1.6 部署 VPS | 🟡 | 配置就绪（Docker/systemd/nginx），待实机部署 |
-| M2 唤醒词接入 | ⬜ | Porcupine 替代按键触发 |
+| M2 唤醒词接入 | 🟡 | Porcupine 代码就绪，需 .ppn 文件 + AccessKey |
 | M3 双端同步 | ⬜ | 多设备连接管理 + 话轮仲裁 |
 | M4 打磨 | ✅ | 断线重连 + 能量过滤 + 工具集 + 取消支持 |
 
@@ -138,7 +138,7 @@ systemctl enable --now jarvis-brain
 | LLM | Claude API Haiku + streaming + Tool Calling |
 | TTS | ElevenLabs eleven_flash_v2_5 WebSocket 流式 |
 | 通信 | FastAPI + WebSocket (wss) + 30s keepalive |
-| 客户端 | PC: Python + sounddevice / Android: Kotlin（待开发） |
+| 客户端 | PC: Python + sounddevice / Android: Kotlin + Porcupine / Web: HTML5 |
 | 部署 | Docker / systemd / nginx + Let's Encrypt |
 
 ## 项目结构
