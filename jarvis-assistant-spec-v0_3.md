@@ -226,9 +226,9 @@ v1 单用户，token 为环境变量配置的随机长字符串；user_id 隐含
 ### M1：PC 单机打通全链路 + 部署（先不接唤醒词）
 - [ ] M1.1　brain 骨架：FastAPI + WS endpoint + **§6.1 token 鉴权** + echo 验证连通（鉴权在任何外部 API 之前落地）
 - [ ] M1.2　接 Deepgram Nova-3 流式：本地录音文件推流测试，验证①中文识别准确率（Nova-3 中文是新能力，重点实测）②endpointing 的 `utterance_end` 时机是否符合 §6.3 设计
-- [ ] M1.3　接 Claude API：Haiku 快模型 + streaming + 查天气只读工具 + 按句切分逻辑，跑通"文字进、工具调用、分句流出"
-- [ ] M1.4　接 ElevenLabs `eleven_flash_v2_5` 流式：与 M1.3 的分句输出串起来，记录字符消耗
-- [ ] M1.5　PC 客户端：按键触发录音 → binary frame 上传 → 收 utterance_end 停录 → 播 TTS，本机 localhost 全链路打通
+- [x] M1.3　接 Claude API：Haiku 快模型 + streaming + 查天气只读工具 + 按句切分逻辑，跑通"文字进、工具调用、分句流出"
+- [x] M1.4　接 ElevenLabs `eleven_flash_v2_5` 流式：与 M1.3 的分句输出串起来，记录字符消耗
+- [x] M1.5　PC 客户端：按键触发录音 → binary frame 上传 → 收 utterance_end 停录 → 播 TTS，本机 localhost 全链路打通
 - [ ] M1.6　**部署**：brain 上境外 VPS（域名 + wss + systemd），PC 客户端改连公网地址，实测跨境端到端延迟（§7 口径），做 go/no-go 判定
 
 ### M2：接入唤醒词（M0、M1.6 双通过后开始）

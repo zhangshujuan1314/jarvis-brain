@@ -1,5 +1,5 @@
 """
-Jarvis Brain — WS endpoint + token auth + STT pipeline.
+Jarvis Brain — WS endpoint + token auth + STT + LLM + TTS pipeline.
 Protocol: §6 control frames (JSON text) + §5 audio frames (binary).
 """
 import asyncio
@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from stt import STTEngine
+from llm import LLMEngine
+from tts import TTSEngine
 
 load_dotenv()
 
@@ -27,9 +29,11 @@ logger = logging.getLogger("jarvis-brain")
 JARVIS_TOKEN = os.environ.get("JARVIS_TOKEN", "dev-token-change-me")
 AUTH_TIMEOUT = 5.0
 
-app = FastAPI(title="Jarvis Brain", version="0.2.0")
+app = FastAPI(title="Jarvis Brain", version="0.3.0")
 
 stt = STTEngine()
+llm = LLMEngine()
+tts = TTSEngine()
 
 
 # ── Turn manager ──────────────────────────────────────────────────
@@ -89,11 +93,11 @@ manager = ConnectionManager()
 # ── Routes ────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {"service": "jarvis-brain", "version": "0.2.0", "devices": manager.count}
+    return {"service": "jarvis-brain", "version": "0.3.0", "devices": manager.count}
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "stt": "ready"}
+    return {"status": "ok", "stt": "ready", "llm": "ready", "tts": "ready"}
 
 
 # ── WS handler ────────────────────────────────────────────────────
@@ -246,8 +250,10 @@ async def _handle_audio(ws: WebSocket, device_id: str, data: bytes):
         await _finalize_turn(ws, device_id, turn_mgr.current_turn_id)
 
 
+# ── Turn finalization: STT → LLM → TTS pipeline ──────────────────
 async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
-    """Run ASR on completed utterance, send result, release turn."""
+    """§7 pipeline: STT → LLM (streaming) → TTS (streaming) → client."""
+    # 1. STT result
     seg = stt.pop()
     if seg is None:
         logger.warning("no speech segment for turn %d", turn_id)
@@ -261,14 +267,38 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
     })
     logger.info("turn %d: stt_result=%r (%.1fs)", turn_id, seg.text, seg.duration)
 
-    # For M1.2, echo the text back as TTS placeholder
-    # (real TTS in M1.4)
-    await _send(ws, {
-        "type": "state",
-        "turn_id": turn_id,
-        "value": "done",
-    })
+    # 2. LLM → TTS streaming pipeline
+    await _send(ws, {"type": "state", "turn_id": turn_id, "value": "thinking"})
 
+    tts_chunk_count = 0
+    try:
+        async for sentence in llm.stream(seg.text):
+            # First sentence: notify client that TTS is starting
+            if tts_chunk_count == 0:
+                await _send(ws, {"type": "state", "turn_id": turn_id, "value": "speaking"})
+
+            # Stream TTS audio for this sentence
+            async for audio_chunk in tts.speak(sentence):
+                if audio_chunk:
+                    # §5 binary frame: [0x02][turn_id:4 LE][PCM data]
+                    frame = b"\x02" + struct.pack("<I", turn_id) + audio_chunk
+                    await ws.send_bytes(frame)
+                    tts_chunk_count += 1
+
+    except Exception as e:
+        logger.error("pipeline error turn %d: %s", turn_id, e)
+        await _send(ws, {
+            "type": "error",
+            "turn_id": turn_id,
+            "stage": "llm|tts",
+            "message": str(e),
+        })
+        turn_mgr.release()
+        return
+
+    # 3. Done
+    await _send(ws, {"type": "tts_done", "turn_id": turn_id})
+    logger.info("turn %d: done (%d audio chunks)", turn_id, tts_chunk_count)
     turn_mgr.release()
 
 
