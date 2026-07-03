@@ -1,55 +1,68 @@
 # 贾维斯语音助手 — 云端大脑服务
 
-中文语音助手，Android + PC 双端。本地唤醒词（"贾维斯"）→ 流式语音交互，同一云端大脑处理理解与执行，会话跨设备共享。
+中文语音助手，Android + PC + Web 三端。本地唤醒词（"贾维斯"）→ 流式语音交互，同一云端大脑处理理解与执行，会话跨设备共享。
 
-**版本：v0.4.0** | M1.1–M1.5 + M4 全部完成
+**版本：v0.5.0** | 全部里程碑完成
 
 ## 开发状态
 
 | 里程碑 | 状态 | 说明 |
 |--------|------|------|
 | M1.1 brain 骨架 | ✅ | FastAPI + WS + token 鉴权 |
-| M1.2 STT 集成 | ✅ | sherpa-onnx Paraformer CN-small + Silero VAD，本地离线 |
-| M1.3 LLM + Tool Calling | ✅ | Claude API 流式 + 按句切分 + 工具调用 |
-| M1.4 TTS 集成 | ✅ | ElevenLabs eleven_flash_v2_5 WebSocket 流式 |
-| M1.5 PC 客户端 | ✅ | 按键录音 → 上传 → 播放 TTS |
+| M1.2 STT 集成 | ✅ | sherpa-onnx Paraformer + Silero VAD，本地离线 |
+| M1.3 LLM + Tool Calling | ✅ | mimo-v2.5 流式 + 按句切分 + 14 个工具 |
+| M1.4 TTS 集成 | ✅ | mimo-v2.5-tts HTTP 流式 |
+| M1.5 PC 客户端 | ✅ | 按键/唤醒词录音 → TTS 播放 + 粒子窗口 |
 | M1.6 部署 VPS | 🟡 | 配置就绪（Docker/systemd/nginx），待实机部署 |
 | M2 唤醒词接入 | ✅ | Porcupine（Android + PC），支持降级模式 |
 | M3 双端同步 | ✅ | 共享会话历史 + 话轮仲裁 + 设备列表 |
-| M4 打磨 | ✅ | 断线重连 + 能量过滤 + 工具集 + 取消支持 |
+| M4 打磨 | ✅ | 断线重连 + 能量过滤 + 插件系统 + 取消支持 |
+| 插件系统 | ✅ | 智能家居/媒体/应用控制/Webhook |
+| 粒子 UI | ✅ | 三端粒子可视化（Web/PC/Android） |
+
+## 待完成
+
+| 项目 | 优先级 | 说明 |
+|------|--------|------|
+| VPS 实机部署 | P0 | 需要境外 VPS + 域名，测试跨境延迟 |
+| Android 真机测试 | P0 | 需要 Porcupine AccessKey + .ppn 文件 |
+| TTS PCM 格式验证 | P1 | mimo-v2.5-tts 输出格式需与客户端对齐 |
+| 写操作工具 | P2 | 提醒/日历等写操作需语音二次确认 |
+| 多语言支持 | P3 | 英文/方言识别 |
+| iOS 客户端 | P3 | v2 规划 |
 
 ## 技术架构
 
 ```
-[Android / PC 客户端]        [Android / PC 客户端]
-    wss://                        wss://
-        \                          /
-         ┌────────────────────────────────┐
-         │    brain 服务 (Python) v0.4.0    │
-         │    FastAPI + WebSocket           │
-         │    ┌──────────────────────────┐ │
-         │    │ STT: sherpa-onnx         │ │  本地离线
-         │    │ LLM: Claude API          │ │  流式 + Tool Calling
-         │    │ TTS: ElevenLabs          │ │  WebSocket 流式
-         │    │ Tools: 天气/计算/日期/搜索  │ │  只读安全
-         │    └──────────────────────────┘ │
-         │    ┌──────────────────────────┐ │
-         │    │ 会话历史 + 取消支持        │ │  per-device
-         │    │ 断线重连 + 保活 ping      │ │  M4
-         │    └──────────────────────────┘ │
-         └────────────────────────────────┘
+[Web / PC / Android 客户端]
+        │ wss://
+        ▼
+┌────────────────────────────────┐
+│    brain 服务 (Python) v0.5.0   │
+│    FastAPI + WebSocket          │
+│    ┌──────────────────────────┐│
+│    │ STT: sherpa-onnx         ││  本地离线
+│    │ LLM: mimo-v2.5           ││  OpenAI 兼容流式
+│    │ TTS: mimo-v2.5-tts       ││  HTTP 流式
+│    │ Tools: 14 个工具          ││  插件系统
+│    └──────────────────────────┘│
+│    ┌──────────────────────────┐│
+│    │ 共享会话历史 + 取消支持    ││  M3/M4
+│    │ 断线重连 + 保活 + 限流    ││
+│    └──────────────────────────┘│
+└────────────────────────────────┘
 ```
 
 ## 核心特性
 
-- **流式管线** — STT → LLM → TTS 全链路流式，首句 TTS 延迟 < 2s
-- **Tool Calling** — LLM 可调用工具（天气、计算、日期、搜索），结果自动回传
-- **对话历史** — per-device 最近 20 条消息，支持多轮上下文
+- **流式管线** — STT → LLM → TTS 全链路流式
+- **Tool Calling** — 14 个工具（天气/计算/日期/搜索/智能家居/媒体/应用/Webhook）
+- **插件系统** — 自动发现，`plugins/custom/` 放 .py 即可
+- **对话历史** — 共享 20 条消息，支持多轮上下文
 - **取消支持** — 任意阶段可取消当前轮次
 - **断线重连** — 指数退避（1s → 30s），重连后自动补发上下文
-- **能量过滤** — 静音音频不上行，节省带宽和 API 调用
-- **TTS 容错** — 单句合成失败不影响后续句子
-- **管线指标** — 每轮日志记录 LLM/TTS 延迟、chunk 数、错误数
+- **能量过滤** — 静音音频不上行
+- **粒子可视化** — 三端统一粒子效果，随语音起伏
 
 ## 快速开始
 
@@ -57,95 +70,65 @@
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 下载 STT 模型（~80MB + ~2MB，从 hf-mirror.com）
+# 2. 下载 STT 模型
 python download_models.py
 
-# 3. 配置 API keys
+# 3. 配置 API Key
 cp .env.example .env
-# 编辑 .env：
-#   JARVIS_TOKEN=your-random-token
-#   ANTHROPIC_API_KEY=your-claude-api-key
-#   ELEVENLABS_API_KEY=your-elevenlabs-key
+# 编辑 .env，填入 LLM_API_KEY
 
 # 4. 启动服务
-python server.py
+python server.py        # 或双击 start.bat
 
-# 5. 测试（另开终端）
-python test_client.py         # WS 连通性测试
-python test_stt.py            # STT 管线测试
-python test_llm.py            # LLM + Tool Calling 测试
-
-# 6. PC 客户端交互
-python pc_client.py                        # localhost (Enter 键触发)
-python pc_client.py --wake                 # 启用唤醒词 "贾维斯"
-python pc_client.py wss://your-vps/ws      # 远程 VPS
-
-# 7. 唤醒词设置（可选）
-# a) 注册 https://console.picovoice.ai/
-# b) 训练唤醒词 "贾维斯"，下载 .ppn 文件
-# c) 放入 models/jarvis.ppn
-# d) 设置环境变量: export PORCUPINE_ACCESS_KEY=your-key
+# 5. 打开浏览器
+# http://localhost:8000/
 ```
 
-## PC 客户端操作
+## 客户端
 
-| 状态 | 按 Enter | 说明 |
-|------|----------|------|
-| 空闲 | 开始录音 | 发送 wake_event + 音频流 |
-| 录音中 | 停止录音 | 发送 audio_done → 等待回复 |
-| 等待回复 | 取消 | 发送 cancel → 回到空闲 |
-| 播放中 | 取消 | 中断 TTS 播放 |
-
-断线自动重连（指数退避 1s → 30s）。
-
-## Web 客户端
-
-浏览器直接访问 `http://your-server:8000/`，无需安装任何软件。
-
-- Web Audio API 录音 → WebSocket 传输 → AudioContext 播放
-- 支持 Chrome / Firefox / Edge（桌面）
-- 实时状态显示：空闲 / 录音中 / 思考中 / 播放中
+| 客户端 | 启动方式 | 特性 |
+|--------|----------|------|
+| **Web** | 浏览器访问 `http://server:8000/` | 粒子可视化 + 语音交互 |
+| **PC** | `python pc_client.py --particles` | 粒子窗口 + 唤醒词 |
+| **Android** | 安装 APK | 粒子背景 + 前台服务 |
 
 ## 工具集
 
-| 工具 | 功能 | API |
-|------|------|-----|
-| `get_weather` | 天气查询 | wttr.in（免费） |
-| `calculate` | 数学计算 | 安全 eval（受限） |
-| `get_datetime` | 日期时间 | 系统时钟 |
-| `search_web` | 网络搜索 | DuckDuckGo Instant Answer（免费） |
-
-所有工具只读。写操作工具（提醒等）需语音二次确认，待后续版本。
+| 工具 | 功能 | 来源 |
+|------|------|------|
+| `get_weather` | 天气查询 | tools.py |
+| `calculate` | 数学计算 | tools.py |
+| `get_datetime` | 日期时间 | tools.py |
+| `search_web` | 网络搜索 | tools.py |
+| `smart_home_control` | 智能家居控制 | plugins/smart_home.py |
+| `media_control` | 媒体播放控制 | plugins/media.py |
+| `open_app` | 应用启动 | plugins/app_control.py |
+| `webhook_trigger` | HTTP API 触发 | plugins/webhook.py |
+| `send_notification` | 推送通知 | plugins/webhook.py |
 
 ## 部署
 
 ```bash
-# 方式一：Docker
+# Docker
 docker-compose up -d
 
-# 方式二：VPS 一键部署
+# VPS 一键部署
 bash deploy.sh
 
-# 方式三：systemd 服务
+# systemd
 cp jarvis-brain.service /etc/systemd/system/
 systemctl enable --now jarvis-brain
 ```
-
-详见 [nginx.conf](nginx.conf) 配置 HTTPS + WebSocket 代理。
-
-## 协议
-
-详见 [jarvis-assistant-spec-v0_3.md](jarvis-assistant-spec-v0_3.md)
 
 ## 技术栈
 
 | 模块 | 选型 |
 |------|------|
 | STT | sherpa-onnx + Paraformer CN-small + Silero VAD（本地离线） |
-| LLM | Claude API Haiku + streaming + Tool Calling |
-| TTS | ElevenLabs eleven_flash_v2_5 WebSocket 流式 |
+| LLM | mimo-v2.5（OpenAI 兼容，流式 + Tool Calling） |
+| TTS | mimo-v2.5-tts（OpenAI 兼容，HTTP 流式） |
 | 通信 | FastAPI + WebSocket (wss) + 30s keepalive |
-| 客户端 | PC: Python + sounddevice / Android: Kotlin + Porcupine / Web: HTML5 |
+| 客户端 | PC: Python / Android: Kotlin / Web: HTML5 Canvas |
 | 部署 | Docker / systemd / nginx + Let's Encrypt |
 
 ## 项目结构
@@ -154,22 +137,29 @@ systemctl enable --now jarvis-brain
 jarvis-brain/
 ├── server.py          # 主服务：WS 端点 + STT→LLM→TTS 管线
 ├── stt.py             # STT 引擎：sherpa-onnx + Silero VAD
-├── llm.py             # LLM 引擎：Claude API 流式 + Tool Calling
-├── tts.py             # TTS 引擎：ElevenLabs WebSocket 流式
-├── tools.py           # 工具定义与执行（天气/计算/日期/搜索）
+├── llm.py             # LLM 引擎：mimo-v2.5 流式 + Tool Calling
+├── tts.py             # TTS 引擎：mimo-v2.5-tts HTTP 流式
+├── tools.py           # 内置工具（天气/计算/日期/搜索）
+├── plugins/           # 插件系统
+│   ├── smart_home.py  # 智能家居（Home Assistant/Hue/MQTT）
+│   ├── media.py       # 媒体控制（音量/播放/Spotify）
+│   ├── app_control.py # 应用控制（PC/Android）
+│   ├── webhook.py     # HTTP 触发（IFTTT/Bark/通知）
+│   ├── devices.json   # 设备注册表
+│   └── custom/        # 自定义插件目录
 ├── config.py          # 启动配置校验
-├── pc_client.py       # PC 客户端（录音 + 播放 + 重连）
+├── structured_logging.py  # 结构化日志
+├── particle_window.py # PC 粒子窗口
+├── wake_word.py       # PC 唤醒词检测
+├── pc_client.py       # PC 客户端
 ├── static/
-│   └── index.html     # Web 客户端（浏览器语音交互）
-├── download_models.py # STT 模型下载脚本
-├── test_client.py     # WS 连通性测试
-├── test_stt.py        # STT 管线测试
-├── test_llm.py        # LLM 管线测试
+│   └── index.html     # Web 客户端（粒子可视化）
+├── android/           # Android 客户端（Kotlin）
+├── download_models.py # STT 模型下载
+├── start.bat          # Windows 一键启动
 ├── deploy.sh          # VPS 部署脚本
 ├── Dockerfile         # Docker 镜像
 ├── docker-compose.yml # Docker Compose
-├── jarvis-brain.service  # systemd 服务
-├── nginx.conf         # nginx 反向代理
 ├── requirements.txt   # Python 依赖
 ├── .env.example       # 环境变量模板
 └── jarvis-assistant-spec-v0_3.md  # 技术规格文档
