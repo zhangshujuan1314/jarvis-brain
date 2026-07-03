@@ -45,6 +45,7 @@ class LLMEngine:
         api_key: str | None = None,
         model: str | None = None,
         max_tokens: int = 512,
+        extra_tools: list[dict] | None = None,
     ):
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self._model = model or os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
@@ -56,7 +57,15 @@ class LLMEngine:
         # Cache the client for reuse across turns
         self._client = anthropic.AsyncAnthropic(api_key=self._api_key) if self._api_key else None
 
-        logger.info("LLM ready: model=%s", self._model)
+        # Merge built-in tools with plugin tools
+        self._tools = list(TOOLS) + list(extra_tools or [])
+        # Tool executor — can be overridden by plugin manager
+        self._executor = execute  # Default: tools.py execute()
+        logger.info("LLM ready: model=%s, tools=%d", self._model, len(self._tools))
+
+    def set_executor(self, executor_fn):
+        """Set a custom tool executor (e.g., plugin manager)."""
+        self._executor = executor_fn
 
     async def stream(
         self,
@@ -91,7 +100,7 @@ class LLMEngine:
                     max_tokens=self._max_tokens,
                     system=SYSTEM_PROMPT,
                     messages=messages,
-                    tools=TOOLS,
+                    tools=self._tools,
                 ) as stream:
                     async for event in stream:
                         if event.type == "content_block_start":
@@ -148,7 +157,7 @@ class LLMEngine:
                 tool_results = []
                 for tu in tool_uses:
                     logger.info("executing tool: %s(%s)", tu["name"], tu["input"])
-                    result = await execute(tu["name"], tu["input"])
+                    result = await self._executor(tu["name"], tu["input"])
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tu["id"],

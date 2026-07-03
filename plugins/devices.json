@@ -1,0 +1,32 @@
+{
+  "客厅灯": {
+    "platform": "home_assistant",
+    "id": "light.living_room",
+    "type": "light"
+  },
+  "卧室灯": {
+    "platform": "home_assistant",
+    "id": "light.bedroom",
+    "type": "light"
+  },
+  "卧室空调": {
+    "platform": "home_assistant",
+    "id": "climate.bedroom_ac",
+    "type": "climate"
+  },
+  "客厅空调": {
+    "platform": "home_assistant",
+    "id": "climate.living_room_ac",
+    "type": "climate"
+  },
+  "窗帘": {
+    "platform": "home_assistant",
+    "id": "cover.living_room",
+    "type": "cover"
+  },
+  "电视": {
+    "platform": "home_assistant",
+    "id": "media_player.tv",
+    "type": "media_player"
+  }
+}

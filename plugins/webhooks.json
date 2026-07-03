@@ -1,0 +1,14 @@
+{
+  "notify_phone": {
+    "url": "https://api.day.app/YOUR_BARK_KEY/Jarvis",
+    "method": "POST",
+    "headers": {},
+    "body": {}
+  },
+  "ifttt_morning": {
+    "url": "https://maker.ifttt.com/trigger/morning_routine/with/key/YOUR_IFTTT_KEY",
+    "method": "POST",
+    "headers": {},
+    "body": {}
+  }
+}

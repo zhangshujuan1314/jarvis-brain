@@ -23,6 +23,7 @@ from llm import LLMEngine
 from tts import TTSEngine
 from config import validate_all, print_config_summary
 from structured_logging import setup_logging
+from plugins import PluginManager
 
 load_dotenv()
 setup_logging()
@@ -44,8 +45,17 @@ if not validate_all():
 print_config_summary()
 
 stt = STTEngine()
-llm = LLMEngine()
 tts = TTSEngine()
+
+# Initialize plugin system
+plugins = PluginManager()
+plugins.load_all()
+
+# LLM with plugin tools
+llm = LLMEngine(extra_tools=plugins.tools)
+llm.set_executor(plugins.execute)  # Route tool calls through plugin manager
+
+logger.info("plugins loaded: %s", [p["name"] for p in plugins.list_plugins()])
 
 
 # ── Turn manager ──────────────────────────────────────────────────
@@ -275,6 +285,14 @@ async def list_devices():
     return {
         "devices": manager.get_device_list(),
         "count": manager.count,
+    }
+
+@app.get("/plugins")
+async def list_plugins():
+    """List all loaded plugins and their tools."""
+    return {
+        "plugins": plugins.list_plugins(),
+        "total_tools": len(plugins.tools),
     }
 
 
