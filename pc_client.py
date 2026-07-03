@@ -1,17 +1,19 @@
 """
-M1.5 PC Client — Keyboard-triggered voice interaction with Jarvis Brain.
+M1.5 + M4.1 PC Client — Keyboard-triggered voice interaction with Jarvis Brain.
+
+Features:
+  - M1.5: State machine (IDLE → RECORDING → WAITING → PLAYING)
+  - M4.1: Exponential backoff reconnection + session sync on reconnect
+  - M4.2: Energy-based silence filtering (skip empty audio)
 
 Flow:
   1. Connect to brain via WebSocket, authenticate
-  2. Press Enter to start recording (hold to speak)
-  3. Audio streams to brain in real-time
+  2. Press Enter to start recording
+  3. Audio streams to brain in real-time (silence filtered out)
   4. Press Enter again to stop (or 15s auto-stop)
   5. Receive STT result, LLM response, TTS audio
   6. Play TTS audio through speakers
   7. Repeat from step 2
-
-State machine (§4):
-  IDLE → RECORDING → WAITING → PLAYING → IDLE
 
 Usage:
   python pc_client.py                    # localhost
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import struct
 import sys
@@ -48,8 +51,17 @@ CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_MS // 1000  # 1600 samples
 CHANNELS = 1
 MAX_RECORD_S = 15
 
+# M4.2: Energy threshold for silence detection (RMS of float32 samples)
+# Typical speech: 0.01–0.1; silence: <0.005
+ENERGY_THRESHOLD = 0.005
+
 TOKEN = os.environ.get("JARVIS_TOKEN", "dev-token-change-me")
 URI = os.environ.get("JARVIS_URI", "ws://localhost:8000/ws")
+
+# M4.1: Reconnection config
+RECONNECT_INITIAL_S = 1.0    # Initial backoff
+RECONNECT_MAX_S = 30.0       # Max backoff
+RECONNECT_FACTOR = 2.0       # Exponential factor
 
 # State machine
 IDLE = "idle"
@@ -74,8 +86,35 @@ class PCClient:
         self.ws = None
         self._audio_buf = bytearray()
         self._play_thread = None
+        self._silence_count = 0  # M4.2: consecutive silence chunks
 
     async def run(self):
+        """M4.1: Main loop with exponential backoff reconnection."""
+        backoff = RECONNECT_INITIAL_S
+
+        while True:
+            try:
+                await self._connect()
+                # If _connect returns normally, user exited
+                return
+            except (
+                websockets.exceptions.ConnectionClosed,
+                websockets.exceptions.InvalidStatusCode,
+                ConnectionRefusedError,
+                OSError,
+            ) as e:
+                self.state = IDLE
+                self._audio_buf.clear()
+                print(f"\n{C_RED}连接断开: {e}{C_RESET}")
+                print(f"{C_YELLOW}⏱ {backoff:.0f}s 后重连...{C_RESET}")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * RECONNECT_FACTOR, RECONNECT_MAX_S)
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n{C_DIM}Bye!{C_RESET}")
+                return
+
+    async def _connect(self):
+        """Single connection attempt. Raises on disconnect."""
         print(f"{C_CYAN}Connecting to {self.uri}...{C_RESET}")
         async with websockets.connect(self.uri) as ws:
             self.ws = ws
@@ -88,11 +127,12 @@ class PCClient:
                 "platform": "pc",
             }))
             resp = json.loads(await ws.recv())
-            if resp["type"] != "auth_fail":
-                print(f"{C_GREEN}✓ Connected & authenticated{C_RESET}")
-            else:
+            if resp["type"] == "auth_fail":
                 print(f"{C_RED}✗ Auth failed: {resp}{C_RESET}")
-                return
+                raise ConnectionRefusedError("auth failed")
+
+            print(f"{C_GREEN}✓ Connected & authenticated{C_RESET}")
+            backoff = RECONNECT_INITIAL_S  # Reset on successful connect
 
             # Start receiver task
             recv_task = asyncio.create_task(self._receiver(ws))
@@ -102,6 +142,8 @@ class PCClient:
                 await self._input_loop(ws)
             except (KeyboardInterrupt, EOFError):
                 print(f"\n{C_DIM}Bye!{C_RESET}")
+                recv_task.cancel()
+                return
             finally:
                 recv_task.cancel()
 
@@ -120,6 +162,7 @@ class PCClient:
     async def _start_recording(self, ws):
         self.turn_id += 1
         self.state = RECORDING
+        self._silence_count = 0
         print(f"{C_GREEN}● 录音中... (再说按 Enter 停止，最长 {MAX_RECORD_S}s){C_RESET}")
 
         # Send wake event
@@ -129,16 +172,27 @@ class PCClient:
         asyncio.ensure_future(self._capture_audio(ws))
 
     async def _capture_audio(self, ws):
-        """Capture microphone audio and stream to server."""
+        """Capture microphone audio and stream to server. M4.2: filter silence."""
         loop = asyncio.get_running_loop()
         start = time.time()
+        sent_chunks = 0
 
         def audio_callback(indata, frames, time_info, status):
+            nonlocal sent_chunks
             if self.state != RECORDING:
                 return
+
+            # M4.2: Energy-based silence detection
+            rms = np.sqrt(np.mean(indata ** 2))
+            if rms < ENERGY_THRESHOLD:
+                self._silence_count += 1
+                return  # Skip silence
+            self._silence_count = 0
+
             pcm = (indata * 32767).astype(np.int16).tobytes()
             frame = b"\x01" + struct.pack("<I", self.turn_id) + pcm
             asyncio.run_coroutine_threadsafe(ws.send(frame), loop)
+            sent_chunks += 1
 
         try:
             with sd.InputStream(
@@ -154,6 +208,7 @@ class PCClient:
                         print(f"{C_YELLOW}⏱ 录音达到 {MAX_RECORD_S}s 上限{C_RESET}")
                         await self._stop_recording(ws)
                         return
+
         except Exception as e:
             print(f"{C_RED}录音错误: {e}{C_RESET}")
             self.state = IDLE
@@ -212,7 +267,13 @@ class PCClient:
                     print(f"{C_RED}✗ 错误 [{msg.get('stage')}]: {msg.get('message')}{C_RESET}")
                     self.state = IDLE
                 elif mtype == "session_sync":
-                    print(f"{C_DIM}[sync] {msg.get('assistant_text', '')}{C_RESET}")
+                    # M4.1: Show synced context from other device or reconnect
+                    user = msg.get("user_text", "")
+                    assistant = msg.get("assistant_text", "")
+                    if user:
+                        print(f"{C_DIM}[sync] 用户: {user}{C_RESET}")
+                    if assistant:
+                        print(f"{C_DIM}[sync] 助手: {assistant}{C_RESET}")
 
         except websockets.exceptions.ConnectionClosed:
             print(f"{C_RED}连接断开{C_RESET}")

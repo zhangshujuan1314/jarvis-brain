@@ -82,6 +82,7 @@ class ConnectionManager:
     def __init__(self):
         self._devices: dict[str, WebSocket] = {}
         self._history: dict[str, list[dict]] = {}  # Per-device conversation history
+        self._last_turn: dict[str, tuple[str, str]] = {}  # Last (user, assistant) per device
 
     async def register(self, ws: WebSocket, device_id: str):
         old = self._devices.pop(device_id, None)
@@ -95,6 +96,21 @@ class ConnectionManager:
         if device_id not in self._history:
             self._history[device_id] = []
         logger.info("device connected: %s", device_id)
+
+        # M4.1: Send session_sync on reconnect (last turn context)
+        last = self.get_last_turn(device_id)
+        if last:
+            user_text, assistant_text = last
+            try:
+                await _send(ws, {
+                    "type": "session_sync",
+                    "turn_id": 0,
+                    "user_text": user_text,
+                    "assistant_text": assistant_text,
+                })
+                logger.info("session_sync sent to %s on reconnect", device_id)
+            except Exception:
+                pass
 
     def remove(self, device_id: str):
         self._devices.pop(device_id, None)
@@ -117,6 +133,12 @@ class ConnectionManager:
         # Trim to keep last N messages
         if len(h) > MAX_HISTORY:
             self._history[device_id] = h[-MAX_HISTORY:]
+        # Store last turn for session_sync on reconnect
+        self._last_turn[device_id] = (user_text, assistant_text)
+
+    def get_last_turn(self, device_id: str) -> tuple[str, str] | None:
+        """Get the last turn for session_sync on reconnect."""
+        return self._last_turn.get(device_id)
 
     def clear_history(self, device_id: str):
         self._history.pop(device_id, None)
