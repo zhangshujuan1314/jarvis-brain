@@ -15,6 +15,7 @@ Protocol (ElevenLabs WebSocket v1):
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -90,7 +91,19 @@ class TTSEngine:
                 await ws.send(json.dumps({"text": ""}))
 
                 # Receive and yield audio chunks as they arrive (true streaming)
-                async for raw in ws:
+                # 8s timeout per message (§9: TTS first packet 8s timeout)
+                deadline = asyncio.get_running_loop().time() + 8.0
+                while True:
+                    try:
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            logger.error("TTS timeout: no response within 8s")
+                            return
+                        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        logger.error("TTS timeout waiting for next message")
+                        return
+
                     if isinstance(raw, bytes):
                         yield raw
                         continue
@@ -109,6 +122,9 @@ class TTSEngine:
 
                     if msg.get("isFinal"):
                         return
+
+                    # Reset deadline after first successful message
+                    deadline = asyncio.get_running_loop().time() + 8.0
 
         except websockets.exceptions.ConnectionClosed as e:
             logger.error("TTS WebSocket closed: %s", e)

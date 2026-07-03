@@ -109,11 +109,11 @@ class PCClient:
         while True:
             if self.state == IDLE:
                 print(f"\n{C_YELLOW}[Enter] 开始录音 | Ctrl+C 退出{C_RESET}")
-                await asyncio.get_event_loop().run_in_executor(None, input)
+                await asyncio.get_running_loop().run_in_executor(None, input)
                 await self._start_recording(ws)
             else:
                 # During recording, wait for Enter to stop
-                await asyncio.get_event_loop().run_in_executor(None, input)
+                await asyncio.get_running_loop().run_in_executor(None, input)
                 if self.state == RECORDING:
                     await self._stop_recording(ws)
 
@@ -130,7 +130,7 @@ class PCClient:
 
     async def _capture_audio(self, ws):
         """Capture microphone audio and stream to server."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         start = time.time()
 
         def audio_callback(indata, frames, time_info, status):

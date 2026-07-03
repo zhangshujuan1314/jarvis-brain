@@ -6,3 +6,4 @@ venv/
 models/
 *.wav
 test_tone.wav
+__pycache__

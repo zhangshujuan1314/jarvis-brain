@@ -88,15 +88,33 @@ class STTEngine:
         return self._vad is not None and not self._vad.empty()
 
     def pop(self) -> Optional[SpeechSegment]:
-        """Get next completed speech segment with recognized text, or None."""
+        """Get next completed speech segment with recognized text, or None.
+
+        If VAD has multiple segments (user paused mid-sentence), they are
+        concatenated into one segment to avoid losing speech.
+        """
         if self._vad is None or self._vad.empty():
             return None
-        seg = self._vad.front()
-        duration = len(seg.samples) / SAMPLE_RATE
-        # Recognize
-        text = self._transcribe(np.array(seg.samples, dtype=np.float32))
-        self._vad.pop()
-        return SpeechSegment(text=text, duration=duration)
+
+        # Collect all queued segments — interleave with short silence to preserve pauses
+        all_samples = []
+        total_duration = 0.0
+        silence_gap = np.zeros(int(SAMPLE_RATE * 0.3), dtype=np.float32)  # 300ms gap
+        while not self._vad.empty():
+            seg = self._vad.front()
+            if all_samples:
+                all_samples.extend(silence_gap)  # Preserve pause between segments
+            all_samples.extend(seg.samples)
+            total_duration += len(seg.samples) / SAMPLE_RATE
+            self._vad.pop()
+
+        if not all_samples:
+            return None
+
+        # Recognize concatenated audio
+        text = self._transcribe(np.array(all_samples, dtype=np.float32))
+        logger.info("STT: %r (%.1fs, %d segments)", text, total_duration, len(all_samples))
+        return SpeechSegment(text=text, duration=total_duration)
 
     # ── Internals ────────────────────────────────────────────────
 
@@ -117,9 +135,7 @@ class STTEngine:
         stream = self._recognizer.create_stream()
         stream.accept_waveform(sample_rate=SAMPLE_RATE, samples=samples)
         self._recognizer.decode_stream(stream)
-        text = stream.result.text.strip()
-        logger.info("STT: %r (%.1fs)", text, len(samples) / SAMPLE_RATE)
-        return text
+        return stream.result.text.strip()
 
 
 def _pcm_to_f32(pcm: bytes) -> np.ndarray:

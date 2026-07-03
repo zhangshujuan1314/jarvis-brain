@@ -229,7 +229,7 @@ v1 单用户，token 为环境变量配置的随机长字符串；user_id 隐含
 - [x] M1.3　接 Claude API：Haiku 快模型 + streaming + 查天气只读工具 + 按句切分逻辑，跑通"文字进、工具调用、分句流出"
 - [x] M1.4　接 ElevenLabs `eleven_flash_v2_5` 流式：与 M1.3 的分句输出串起来，记录字符消耗
 - [x] M1.5　PC 客户端：按键触发录音 → binary frame 上传 → 收 utterance_end 停录 → 播 TTS，本机 localhost 全链路打通
-- [ ] M1.6　**部署**：brain 上境外 VPS（域名 + wss + systemd），PC 客户端改连公网地址，实测跨境端到端延迟（§7 口径），做 go/no-go 判定
+- [~] M1.6　**部署**：brain 上境外 VPS（域名 + wss + systemd），PC 客户端改连公网地址，实测跨境端到端延迟（§7 口径），做 go/no-go 判定。部署配置已就绪（Dockerfile / docker-compose / systemd / nginx / deploy.sh），待实机部署
 
 ### M2：接入唤醒词（M0、M1.6 双通过后开始）
 - [ ] M2.1　Android 客户端完整实现：M0 demo + §4 状态机 + 录音上传 + 播放，连公网 brain 跑通"说贾维斯→语音对话"闭环

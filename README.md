@@ -66,6 +66,22 @@ python pc_client.py wss://your-vps/ws      # 远程 VPS
 
 详见 [jarvis-assistant-spec-v0_3.md](jarvis-assistant-spec-v0_3.md)
 
+## 部署
+
+```bash
+# 方式一：Docker
+docker-compose up -d
+
+# 方式二：VPS 直接部署
+bash deploy.sh
+
+# 方式三：systemd 服务
+cp jarvis-brain.service /etc/systemd/system/
+systemctl enable --now jarvis-brain
+```
+
+详见 [nginx.conf](nginx.conf) 配置 HTTPS + WebSocket 代理。
+
 ## 技术栈
 
 | 模块 | 选型 |
@@ -76,3 +92,4 @@ python pc_client.py wss://your-vps/ws      # 远程 VPS
 | 通信 | FastAPI + WebSocket (wss) |
 | 唤醒词 | Porcupine（客户端，M2 接入） |
 | 客户端 | Android: Kotlin / PC: Python + sounddevice |
+| 部署 | Docker / systemd / nginx + Let's Encrypt |

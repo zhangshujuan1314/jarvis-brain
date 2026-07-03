@@ -38,32 +38,50 @@ tts = TTSEngine()
 
 # ── Turn manager ──────────────────────────────────────────────────
 class TurnManager:
-    """§6.3: first-come-first-served turn arbitration."""
+    """§6.3: first-come-first-served turn arbitration.
+
+    Concurrency fix: _finalized flag prevents _finalize_turn from running twice
+    when both VAD utterance_end and client audio_done arrive for the same turn.
+    """
 
     def __init__(self):
         self.current_device: Optional[str] = None
         self.current_turn_id: Optional[int] = None
+        self._finalized: bool = False
 
     def acquire(self, device_id: str, turn_id: int) -> bool:
         if self.current_device is not None and self.current_device != device_id:
             return False
         self.current_device = device_id
         self.current_turn_id = turn_id
+        self._finalized = False
         stt.start_turn()
+        return True
+
+    def mark_finalized(self) -> bool:
+        """Mark turn as finalized. Returns True if this is the first call (should proceed)."""
+        if self._finalized:
+            return False
+        self._finalized = True
         return True
 
     def release(self):
         self.current_device = None
         self.current_turn_id = None
+        self._finalized = False
 
 
 turn_mgr = TurnManager()
 
 
 # ── Connection manager ────────────────────────────────────────────
+MAX_HISTORY = 20  # Max messages per device (balances context vs memory)
+
+
 class ConnectionManager:
     def __init__(self):
         self._devices: dict[str, WebSocket] = {}
+        self._history: dict[str, list[dict]] = {}  # Per-device conversation history
 
     async def register(self, ws: WebSocket, device_id: str):
         old = self._devices.pop(device_id, None)
@@ -73,14 +91,35 @@ class ConnectionManager:
             except Exception:
                 pass
         self._devices[device_id] = ws
+        # Preserve existing history if device reconnects
+        if device_id not in self._history:
+            self._history[device_id] = []
         logger.info("device connected: %s", device_id)
 
     def remove(self, device_id: str):
         self._devices.pop(device_id, None)
+        # Keep history for a while (in case of reconnect)
         logger.info("device disconnected: %s", device_id)
 
     def get(self, device_id: str) -> Optional[WebSocket]:
         return self._devices.get(device_id)
+
+    def get_history(self, device_id: str) -> list[dict]:
+        return self._history.get(device_id, [])
+
+    def add_history(self, device_id: str, user_text: str, assistant_text: str):
+        """Add a turn to conversation history, capping at MAX_HISTORY."""
+        if device_id not in self._history:
+            self._history[device_id] = []
+        h = self._history[device_id]
+        h.append({"role": "user", "content": user_text})
+        h.append({"role": "assistant", "content": assistant_text})
+        # Trim to keep last N messages
+        if len(h) > MAX_HISTORY:
+            self._history[device_id] = h[-MAX_HISTORY:]
+
+    def clear_history(self, device_id: str):
+        self._history.pop(device_id, None)
 
     @property
     def count(self) -> int:
@@ -97,7 +136,18 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "stt": "ready", "llm": "ready", "tts": "ready"}
+    return {
+        "status": "ok",
+        "stt": "ready",
+        "llm": "ready",
+        "tts": "ready",
+        "devices": manager.count,
+    }
+
+@app.post("/history/{device_id}/clear")
+async def clear_history(device_id: str):
+    manager.clear_history(device_id)
+    return {"status": "ok", "message": f"history cleared for {device_id}"}
 
 
 # ── WS handler ────────────────────────────────────────────────────
@@ -207,6 +257,9 @@ async def _on_audio_done(ws: WebSocket, device_id: str, msg: dict):
     if turn_mgr.current_device != device_id or turn_mgr.current_turn_id != turn_id:
         return
 
+    if not turn_mgr.mark_finalized():
+        return  # Already finalized by VAD utterance_end
+
     await _send(ws, {"type": "utterance_end", "turn_id": turn_id})
     await _finalize_turn(ws, device_id, turn_id)
 
@@ -242,7 +295,7 @@ async def _handle_audio(ws: WebSocket, device_id: str, data: bytes):
     # Feed STT, check for utterance end
     utterance_done = stt.feed(pcm)
 
-    if utterance_done:
+    if utterance_done and turn_mgr.mark_finalized():
         await _send(ws, {
             "type": "utterance_end",
             "turn_id": turn_mgr.current_turn_id,
@@ -270,9 +323,14 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
     # 2. LLM → TTS streaming pipeline
     await _send(ws, {"type": "state", "turn_id": turn_id, "value": "thinking"})
 
+    history = manager.get_history(device_id)
     tts_chunk_count = 0
+    full_response = ""
+
     try:
-        async for sentence in llm.stream(seg.text):
+        async for sentence in llm.stream(seg.text, history=history):
+            full_response += sentence
+
             # First sentence: notify client that TTS is starting
             if tts_chunk_count == 0:
                 await _send(ws, {"type": "state", "turn_id": turn_id, "value": "speaking"})
@@ -296,7 +354,13 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
         turn_mgr.release()
         return
 
-    # 3. Done
+    # 3. Update conversation history & send done
+    if full_response:
+        manager.add_history(device_id, seg.text, full_response)
+
+    # 4. Broadcast session_sync for cross-device continuity (§6.2)
+    await _broadcast_session_sync(device_id, turn_id, seg.text, full_response)
+
     await _send(ws, {"type": "tts_done", "turn_id": turn_id})
     logger.info("turn %d: done (%d audio chunks)", turn_id, tts_chunk_count)
     turn_mgr.release()
@@ -305,6 +369,24 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
 # ── Helpers ───────────────────────────────────────────────────────
 async def _send(ws: WebSocket, msg: dict):
     await ws.send_text(json.dumps(msg, ensure_ascii=False))
+
+
+async def _broadcast_session_sync(
+    source_device: str, turn_id: int, user_text: str, assistant_text: str
+):
+    """§6.2: Broadcast session_sync to all devices except the source."""
+    sync_msg = {
+        "type": "session_sync",
+        "turn_id": turn_id,
+        "user_text": user_text,
+        "assistant_text": assistant_text,
+    }
+    for did, ws in manager._devices.items():
+        if did != source_device:
+            try:
+                await _send(ws, sync_msg)
+            except Exception:
+                pass  # Device might be disconnected
 
 
 # ── Entry ─────────────────────────────────────────────────────────

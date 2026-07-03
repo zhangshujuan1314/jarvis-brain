@@ -1,0 +1,17 @@
+[Unit]
+Description=Jarvis Brain Voice Assistant
+After=network.target
+
+[Service]
+Type=simple
+User=jarvis
+WorkingDirectory=/opt/jarvis-brain
+EnvironmentFile=/opt/jarvis-brain/.env
+ExecStart=/opt/jarvis-brain/venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
