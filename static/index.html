@@ -5,270 +5,463 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Jarvis 语音助手</title>
 <style>
-  :root { --bg: #0a0a0f; --card: #12121a; --accent: #4f8cff; --green: #22c55e; --red: #ef4444; --text: #e2e2e2; --dim: #666; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
-  .container { max-width: 600px; width: 100%; padding: 20px; }
-  h1 { text-align: center; font-size: 1.5em; margin: 20px 0; color: var(--accent); }
-  .status { text-align: center; padding: 8px; border-radius: 8px; margin-bottom: 16px; font-size: 0.9em; transition: all 0.3s; }
-  .status.connected { background: #0f2a1a; color: var(--green); }
-  .status.disconnected { background: #2a0f0f; color: var(--red); }
-  .status.recording { background: #1a2a0f; color: #facc15; }
-  .status.waiting { background: #0f1a2a; color: var(--accent); }
-  .status.playing { background: #0f2a1a; color: var(--green); }
-  .controls { display: flex; justify-content: center; gap: 12px; margin: 20px 0; }
-  button { padding: 12px 28px; border: none; border-radius: 12px; font-size: 1em; cursor: pointer; transition: all 0.2s; }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
-  #btn-record { background: var(--green); color: #000; font-weight: 600; min-width: 140px; }
-  #btn-record.active { background: var(--red); animation: pulse 1s infinite; }
-  #btn-cancel { background: #333; color: var(--text); }
-  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  body {
+    background: #000;
+    overflow: hidden;
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+    color: #e2e2e2;
+    user-select: none;
+  }
+  canvas { display: block; }
 
-  /* Audio visualization */
-  .viz { display: flex; justify-content: center; align-items: flex-end; gap: 3px; height: 50px; margin: 10px 0; }
-  .viz-bar { width: 4px; background: var(--accent); border-radius: 2px; transition: height 0.05s; min-height: 2px; }
-  .viz.active .viz-bar { background: var(--green); }
-  .volume-meter { text-align: center; font-size: 0.8em; color: var(--dim); margin: 4px 0; min-height: 1.2em; }
+  /* UI overlay */
+  .overlay {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .overlay > * { pointer-events: auto; }
 
-  .chat { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; max-height: 400px; overflow-y: auto; }
-  .msg { padding: 10px 14px; border-radius: 12px; max-width: 85%; font-size: 0.95em; line-height: 1.4; animation: fadeIn 0.2s; }
-  .msg.user { background: #1a2744; align-self: flex-end; }
-  .msg.assistant { background: #1a1a2e; align-self: flex-start; }
-  .msg.system { background: transparent; color: var(--dim); text-align: center; font-size: 0.8em; align-self: center; }
-  .msg.error { background: #2a0f0f; color: var(--red); text-align: center; font-size: 0.85em; align-self: center; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  /* Status text */
+  .status-text {
+    font-size: 1.1em;
+    margin-bottom: 16px;
+    text-shadow: 0 0 20px rgba(79, 140, 255, 0.5);
+    transition: all 0.3s;
+    letter-spacing: 2px;
+  }
+  .status-text.idle { color: #4f8cff; }
+  .status-text.recording { color: #22c55e; }
+  .status-text.waiting { color: #facc15; }
+  .status-text.playing { color: #a78bfa; }
 
-  .config { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-  .config label { display: block; font-size: 0.85em; color: var(--dim); margin-bottom: 4px; }
-  .config input { width: 100%; padding: 8px; border: 1px solid #333; border-radius: 6px; background: #1a1a2e; color: var(--text); font-size: 0.9em; margin-bottom: 8px; }
-  .tools { background: var(--card); border-radius: 12px; padding: 12px; margin-top: 16px; }
-  .tools h3 { font-size: 0.85em; color: var(--dim); margin-bottom: 8px; }
-  .tool-list { display: flex; flex-wrap: wrap; gap: 6px; }
-  .tool-tag { background: #1a2744; color: var(--accent); padding: 4px 10px; border-radius: 16px; font-size: 0.8em; }
+  /* Chat bubble */
+  .chat-bubble {
+    max-width: 500px;
+    padding: 12px 20px;
+    border-radius: 16px;
+    font-size: 0.95em;
+    line-height: 1.5;
+    margin-bottom: 16px;
+    backdrop-filter: blur(10px);
+    animation: fadeUp 0.3s ease-out;
+    text-align: center;
+  }
+  .chat-bubble.user {
+    background: rgba(26, 39, 68, 0.8);
+    border: 1px solid rgba(79, 140, 255, 0.3);
+  }
+  .chat-bubble.assistant {
+    background: rgba(26, 26, 46, 0.8);
+    border: 1px solid rgba(167, 139, 250, 0.3);
+  }
+  .chat-bubble.hidden { display: none; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } }
+
+  /* Controls */
+  .controls {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  .btn {
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.05);
+    color: #fff;
+    font-size: 24px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(10px);
+  }
+  .btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.4); }
+  .btn:active { transform: scale(0.95); }
+  .btn.record {
+    width: 80px; height: 80px;
+    font-size: 28px;
+    border-color: rgba(34, 197, 94, 0.5);
+    background: rgba(34, 197, 94, 0.1);
+  }
+  .btn.record.active {
+    border-color: rgba(239, 68, 68, 0.8);
+    background: rgba(239, 68, 68, 0.2);
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); }
+    50% { box-shadow: 0 0 0 15px rgba(239,68,68,0); }
+  }
+
+  /* Config panel */
+  .config {
+    position: fixed;
+    top: 20px; right: 20px;
+    background: rgba(18, 18, 26, 0.9);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 16px;
+    z-index: 20;
+    display: none;
+    width: 280px;
+  }
+  .config.show { display: block; }
+  .config label { display: block; font-size: 0.8em; color: #666; margin-bottom: 4px; }
+  .config input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: rgba(26, 26, 46, 0.8);
+    color: #e2e2e2;
+    font-size: 0.85em;
+    margin-bottom: 10px;
+  }
+  .config button {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 8px;
+    background: #4f8cff;
+    color: #000;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .gear {
+    position: fixed;
+    top: 20px; right: 20px;
+    z-index: 21;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.05);
+    color: #666;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>🧠 Jarvis 语音助手</h1>
 
-  <div class="config">
-    <label>WebSocket 地址</label>
-    <input type="text" id="ws-uri" value="ws://localhost:8000/ws" placeholder="wss://your-vps/ws">
-    <label>Token</label>
-    <input type="password" id="token" value="dev-token-change-me" placeholder="your-token">
-  </div>
+<canvas id="canvas"></canvas>
 
-  <div id="status" class="status disconnected">未连接</div>
+<!-- Config gear -->
+<button class="gear" onclick="toggleConfig()">⚙</button>
 
-  <div class="viz" id="viz"></div>
-  <div class="volume-meter" id="volume-meter"></div>
+<!-- Config panel -->
+<div class="config" id="config">
+  <label>服务器地址</label>
+  <input type="text" id="ws-uri" value="ws://localhost:8000/ws" placeholder="wss://your-vps/ws">
+  <label>Token</label>
+  <input type="password" id="token" value="dev-token-change-me" placeholder="your-token">
+  <button onclick="toggleConnection()">连接</button>
+</div>
 
+<!-- Overlay UI -->
+<div class="overlay">
+  <div class="status-text idle" id="status">JARVIS</div>
+  <div class="chat-bubble hidden" id="chat-bubble"></div>
   <div class="controls">
-    <button id="btn-connect" onclick="toggleConnection()">连接</button>
-    <button id="btn-record" disabled onclick="toggleRecord()">🎤 开始录音</button>
-    <button id="btn-cancel" disabled onclick="cancelTurn()">取消</button>
-  </div>
-
-  <div class="chat" id="chat"></div>
-
-  <div class="tools">
-    <h3>可用工具</h3>
-    <div class="tool-list">
-      <span class="tool-tag">🌤 天气</span>
-      <span class="tool-tag">🔢 计算</span>
-      <span class="tool-tag">📅 日期</span>
-      <span class="tool-tag">🔍 搜索</span>
-    </div>
+    <button class="btn" id="btn-cancel" style="display:none" onclick="cancelTurn()">✕</button>
+    <button class="btn record" id="btn-record" onclick="toggleRecord()">🎤</button>
   </div>
 </div>
 
 <script>
+// ═══════════════════════════════════════════════════════════════════
+// PARTICLE SYSTEM
+// ═══════════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, centerX, centerY;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  centerX = W / 2;
+  centerY = H / 2 - 60;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Particle class
+class Particle {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    // Distribute in a circle
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 80 + Math.random() * 120;
+    this.baseX = centerX + Math.cos(angle) * radius;
+    this.baseY = centerY + Math.sin(angle) * radius;
+    this.x = this.baseX;
+    this.y = this.baseY;
+    this.vx = 0;
+    this.vy = 0;
+    this.size = 1.5 + Math.random() * 2.5;
+    this.alpha = 0.3 + Math.random() * 0.5;
+    this.phase = Math.random() * Math.PI * 2;
+    this.speed = 0.005 + Math.random() * 0.01;
+    this.orbitRadius = radius;
+    this.orbitAngle = angle;
+    this.drift = (Math.random() - 0.5) * 0.5;
+  }
+
+  update(audioLevel, state, t) {
+    const intensity = audioLevel / 100; // 0..1
+
+    if (state === 'recording') {
+      // Particles explode outward with voice
+      const pushForce = intensity * 8;
+      const angle = Math.atan2(this.y - centerY, this.x - centerX);
+      this.vx += Math.cos(angle) * pushForce;
+      this.vy += Math.sin(angle) * pushForce;
+      // Vibrate
+      this.vx += (Math.random() - 0.5) * intensity * 4;
+      this.vy += (Math.random() - 0.5) * intensity * 4;
+    } else if (state === 'thinking') {
+      // Orbit faster
+      this.orbitAngle += 0.03;
+      const r = this.orbitRadius + Math.sin(t * 3 + this.phase) * 20;
+      this.baseX = centerX + Math.cos(this.orbitAngle) * r;
+      this.baseY = centerY + Math.sin(this.orbitAngle) * r;
+    } else if (state === 'playing') {
+      // Wave with audio
+      const wave = Math.sin(t * 5 + this.orbitAngle * 3) * intensity * 30;
+      const angle = Math.atan2(this.baseY - centerY, this.baseX - centerX);
+      this.baseX = centerX + Math.cos(this.orbitAngle) * (this.orbitRadius + wave);
+      this.baseY = centerY + Math.sin(this.orbitAngle) * (this.orbitRadius + wave);
+    } else {
+      // Idle: gentle orbit
+      this.orbitAngle += this.speed;
+      this.baseX = centerX + Math.cos(this.orbitAngle) * this.orbitRadius;
+      this.baseY = centerY + Math.sin(this.orbitAngle) * this.orbitRadius;
+    }
+
+    // Spring back to base
+    const dx = this.baseX - this.x;
+    const dy = this.baseY - this.y;
+    this.vx += dx * 0.02;
+    this.vy += dy * 0.02;
+
+    // Damping
+    this.vx *= 0.92;
+    this.vy *= 0.92;
+
+    // Apply drift
+    this.x += this.vx + this.drift;
+    this.y += this.vy;
+
+    // Alpha based on state
+    if (state === 'recording') {
+      this.alpha = 0.4 + intensity * 0.6;
+    } else if (state === 'thinking') {
+      this.alpha = 0.5 + Math.sin(t * 4 + this.phase) * 0.3;
+    } else {
+      this.alpha = 0.3 + Math.sin(t + this.phase) * 0.15;
+    }
+  }
+
+  draw(ctx, state, t) {
+    const colors = {
+      idle:      { r: 79,  g: 140, b: 255 },
+      recording: { r: 34,  g: 197, b: 94  },
+      waiting:   { r: 250, g: 204, b: 21  },
+      playing:   { r: 167, g: 139, b: 250 },
+    };
+    const c = colors[state] || colors.idle;
+
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${this.alpha})`;
+    ctx.fill();
+
+    // Glow
+    if (this.size > 2) {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size * 3, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${this.alpha * 0.1})`;
+      ctx.fill();
+    }
+  }
+}
+
+// Create particles
+const PARTICLE_COUNT = 300;
+const particles = Array.from({ length: PARTICLE_COUNT }, () => new Particle());
+
+// Audio level (0-100)
+let audioLevel = 0;
+let targetAudioLevel = 0;
+
+function updateParticles(t) {
+  // Smooth audio level
+  audioLevel += (targetAudioLevel - audioLevel) * 0.15;
+
+  // Clear with trail effect
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Draw center glow
+  const glowRadius = 150 + audioLevel * 2;
+  const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, glowRadius);
+  const glowColors = {
+    idle: 'rgba(79, 140, 255, 0.03)',
+    recording: 'rgba(34, 197, 94, 0.05)',
+    waiting: 'rgba(250, 204, 21, 0.04)',
+    playing: 'rgba(167, 139, 250, 0.05)',
+  };
+  gradient.addColorStop(0, glowColors[state] || glowColors.idle);
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, W, H);
+
+  // Update and draw particles
+  for (const p of particles) {
+    p.update(audioLevel, state, t);
+    p.draw(ctx, state, t);
+  }
+
+  // Draw connections between close particles
+  ctx.strokeStyle = `rgba(79, 140, 255, 0.05)`;
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < particles.length; i += 3) {
+    for (let j = i + 1; j < particles.length; j += 3) {
+      const dx = particles[i].x - particles[j].x;
+      const dy = particles[i].y - particles[j].y;
+      const dist = dx * dx + dy * dy;
+      if (dist < 2500) {
+        ctx.beginPath();
+        ctx.moveTo(particles[i].x, particles[i].y);
+        ctx.lineTo(particles[j].x, particles[j].y);
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+// Animation loop
+let state = 'idle';
+function animate(ts) {
+  const t = ts / 1000;
+  updateParticles(t);
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+
+// ═══════════════════════════════════════════════════════════════════
+// WEBSOCKET + AUDIO
+// ═══════════════════════════════════════════════════════════════════
+
 let ws = null;
 let mediaStream = null;
 let audioContext = null;
 let processor = null;
 let analyser = null;
 let turnId = 0;
-let state = 'idle'; // idle, recording, waiting, playing
 let audioQueue = [];
 let isPlaying = false;
-let vizBars = [];
-let animFrame = null;
-
 const SAMPLE_RATE = 16000;
-const CHUNK_SAMPLES = 1600; // 100ms
-const VIZ_BARS = 32;
-
-// Initialize visualization bars
-function initViz() {
-  const viz = document.getElementById('viz');
-  viz.innerHTML = '';
-  vizBars = [];
-  for (let i = 0; i < VIZ_BARS; i++) {
-    const bar = document.createElement('div');
-    bar.className = 'viz-bar';
-    bar.style.height = '2px';
-    viz.appendChild(bar);
-    vizBars.push(bar);
-  }
-}
-initViz();
-
-function updateViz() {
-  if (!analyser || state !== 'recording') {
-    vizBars.forEach(b => b.style.height = '2px');
-    document.getElementById('viz').classList.remove('active');
-    return;
-  }
-  document.getElementById('viz').classList.add('active');
-
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteFrequencyData(data);
-
-  const step = Math.floor(data.length / VIZ_BARS);
-  let sum = 0;
-  for (let i = 0; i < VIZ_BARS; i++) {
-    const val = data[i * step] / 255;
-    vizBars[i].style.height = Math.max(2, val * 48) + 'px';
-    sum += val;
-  }
-
-  const avg = sum / VIZ_BARS;
-  const db = avg > 0 ? Math.round(20 * Math.log10(avg)) : -60;
-  document.getElementById('volume-meter').textContent = state === 'recording' ? `${db} dB` : '';
-
-  animFrame = requestAnimationFrame(updateViz);
-}
+const CHUNK_SAMPLES = 1600;
 
 function setStatus(text, cls) {
   const el = document.getElementById('status');
   el.textContent = text;
-  el.className = 'status ' + cls;
+  el.className = 'status-text ' + cls;
 }
 
-function addMsg(text, type) {
-  const chat = document.getElementById('chat');
-  const div = document.createElement('div');
-  div.className = 'msg ' + type;
-  div.textContent = text;
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
+function showChat(text, type) {
+  const el = document.getElementById('chat-bubble');
+  el.textContent = text;
+  el.className = 'chat-bubble ' + type;
+  setTimeout(() => { if (el.textContent === text) el.className = 'chat-bubble hidden'; }, 8000);
 }
 
-function resetState() {
-  if (processor) { try { processor.disconnect(); } catch(e) {} processor = null; }
-  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-  audioQueue = [];
-  if (isPlaying && audioContext) { try { audioContext.close(); } catch(e) {} audioContext = null; isPlaying = false; }
-  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
-  state = 'idle';
-  vizBars.forEach(b => b.style.height = '2px');
-  document.getElementById('volume-meter').textContent = '';
-  updateButtons();
+function toggleConfig() {
+  document.getElementById('config').classList.toggle('show');
 }
 
 function toggleConnection() {
-  if (ws) {
-    ws.close();
-    return;
-  }
+  if (ws) { ws.close(); return; }
   const uri = document.getElementById('ws-uri').value;
   const token = document.getElementById('token').value;
+  if (!uri || !token) return;
 
-  if (!uri || !token) {
-    addMsg('请填写服务器地址和 Token', 'error');
-    return;
-  }
-
-  setStatus('连接中...', 'disconnected');
-  document.getElementById('btn-connect').disabled = true;
-
-  try {
-    ws = new WebSocket(uri);
-  } catch(e) {
-    addMsg('连接失败: ' + e.message, 'error');
-    return;
-  }
+  setStatus('连接中...', 'idle');
+  ws = new WebSocket(uri);
 
   ws.onopen = () => {
     ws.send(JSON.stringify({
       type: 'auth', token,
-      device_id: 'web-' + Math.random().toString(36).slice(2, 6),
+      device_id: 'web-particle-' + Math.random().toString(36).slice(2, 6),
       platform: 'web'
     }));
   };
 
   ws.onmessage = (e) => {
     if (e.data instanceof Blob) { handleBinary(e.data); return; }
-    try { handleMsg(JSON.parse(e.data)); } catch(err) { console.error('msg parse error', err); }
+    try { handleMsg(JSON.parse(e.data)); } catch(err) {}
   };
 
-  ws.onclose = (e) => {
+  ws.onclose = () => {
     ws = null;
     resetState();
-    setStatus('已断开' + (e.reason ? ': ' + e.reason : ''), 'disconnected');
-    document.getElementById('btn-connect').textContent = '连接';
-    document.getElementById('btn-connect').disabled = false;
-    document.getElementById('btn-record').disabled = true;
-    document.getElementById('btn-cancel').disabled = true;
-    if (e.code !== 1000) addMsg('连接断开 (code=' + e.code + ')', 'system');
+    setStatus('已断开', 'idle');
   };
 
-  ws.onerror = () => {
-    addMsg('连接错误，请检查服务器地址', 'error');
-  };
+  document.getElementById('config').classList.remove('show');
 }
 
 function handleMsg(msg) {
   switch (msg.type) {
     case 'auth_ok':
-      setStatus('已连接', 'connected');
-      document.getElementById('btn-connect').textContent = '断开';
-      document.getElementById('btn-connect').disabled = false;
-      document.getElementById('btn-record').disabled = false;
-      addMsg('已连接到服务器', 'system');
+      setStatus('JARVIS', 'idle');
       break;
     case 'auth_fail':
-      setStatus('认证失败', 'disconnected');
-      addMsg('认证失败: ' + (msg.reason || 'unknown'), 'error');
+      setStatus('认证失败', 'idle');
       ws.close();
       break;
-    case 'turn_accepted':
-      break;
     case 'turn_rejected':
-      addMsg('请求被拒绝: ' + msg.reason, 'error');
+      showChat('请求被拒绝: ' + msg.reason, 'user');
       resetState();
-      setStatus('已连接', 'connected');
       break;
     case 'utterance_end':
       if (state === 'recording') stopRecording();
       break;
     case 'stt_result':
-      addMsg(msg.text, 'user');
+      showChat(msg.text, 'user');
       break;
     case 'state':
-      if (msg.value === 'thinking') {
-        setStatus('🧠 思考中...', 'waiting');
-        state = 'waiting';
-      } else if (msg.value === 'speaking') {
-        setStatus('🔊 播放中...', 'playing');
-        state = 'playing';
-      } else if (msg.value === 'cancelled') {
-        resetState();
-        setStatus('已连接', 'connected');
-      }
-      updateButtons();
+      if (msg.value === 'thinking') { state = 'waiting'; setStatus('思考中...', 'waiting'); }
+      else if (msg.value === 'speaking') { state = 'playing'; setStatus(' speaking', 'playing'); initPlayback(); }
+      else if (msg.value === 'cancelled') { resetState(); }
       break;
     case 'tts_done':
       playQueue();
       break;
     case 'error':
-      addMsg('错误 [' + msg.stage + ']: ' + msg.message, 'error');
+      showChat('错误: ' + msg.message, 'user');
       resetState();
-      setStatus('已连接', 'connected');
       break;
     case 'session_sync':
-      if (msg.assistant_text) addMsg('[同步] ' + msg.assistant_text, 'system');
+      if (msg.assistant_text) showChat(msg.assistant_text, 'assistant');
       break;
   }
 }
@@ -277,10 +470,14 @@ async function handleBinary(blob) {
   const buf = await blob.arrayBuffer();
   const data = new Uint8Array(buf);
   if (data.length < 6 || data[0] !== 0x02) return;
-  const turnId = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
-  if (turnId !== turnId) return; // stale
   audioQueue.push(data.slice(5));
   if (state === 'playing' && !isPlaying) playQueue();
+}
+
+function initPlayback() {
+  if (!audioContext || audioContext.state === 'closed') {
+    audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+  }
 }
 
 function playQueue() {
@@ -293,47 +490,46 @@ function playQueue() {
   for (const chunk of audioQueue) { merged.set(chunk, off); off += chunk.length; }
   audioQueue = [];
 
+  // Convert to float32 and drive particles
   const samples = new Float32Array(merged.length / 2);
   const view = new DataView(merged.buffer);
+  let sum = 0;
   for (let i = 0; i < samples.length; i++) {
     samples[i] = view.getInt16(i * 2, true) / 32768;
+    sum += samples[i] * samples[i];
   }
+  const rms = Math.sqrt(sum / samples.length);
+  targetAudioLevel = Math.min(100, rms * 300);
 
-  if (!audioContext || audioContext.state === 'closed') audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+  initPlayback();
   const buffer = audioContext.createBuffer(1, samples.length, SAMPLE_RATE);
   buffer.getChannelData(0).set(samples);
   const source = audioContext.createBufferSource();
   source.buffer = buffer;
   source.connect(audioContext.destination);
+
+  // Drive particle level during playback
+  const startTime = audioContext.currentTime;
+  const duration = samples.length / SAMPLE_RATE;
+  function updateLevel() {
+    if (audioContext.currentTime - startTime > duration) {
+      targetAudioLevel = 0;
+      return;
+    }
+    // Decay
+    targetAudioLevel *= 0.95;
+    requestAnimationFrame(updateLevel);
+  }
+  updateLevel();
+
   source.onended = () => {
     isPlaying = false;
+    targetAudioLevel = 0;
     if (audioQueue.length > 0) { playQueue(); return; }
     state = 'idle';
-    setStatus('已连接', 'connected');
-    updateButtons();
-    addMsg('✓ 回复完毕', 'system');
+    setStatus('JARVIS', 'idle');
   };
   source.start();
-}
-
-function updateButtons() {
-  const btn = document.getElementById('btn-record');
-  const btnCancel = document.getElementById('btn-cancel');
-  if (state === 'idle') {
-    btn.textContent = '🎤 开始录音';
-    btn.classList.remove('active');
-    btn.disabled = !ws;
-    btnCancel.disabled = true;
-  } else if (state === 'recording') {
-    btn.textContent = '⏹ 停止录音';
-    btn.classList.add('active');
-    btnCancel.disabled = false;
-  } else {
-    btn.textContent = '🎤 开始录音';
-    btn.classList.remove('active');
-    btn.disabled = true;
-    btnCancel.disabled = false;
-  }
 }
 
 async function toggleRecord() {
@@ -342,14 +538,13 @@ async function toggleRecord() {
 }
 
 async function startRecording() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    addMsg('未连接到服务器', 'error');
-    return;
-  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   turnId++;
   state = 'recording';
-  setStatus('🎤 录音中...', 'recording');
-  updateButtons();
+  setStatus('● 录音中', 'recording');
+
+  document.getElementById('btn-record').classList.add('active');
+  document.getElementById('btn-cancel').style.display = 'flex';
 
   ws.send(JSON.stringify({ type: 'wake_event', turn_id: turnId }));
 
@@ -358,59 +553,55 @@ async function startRecording() {
       audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true }
     });
   } catch(e) {
-    addMsg('麦克风访问失败: ' + (e.name === 'NotAllowedError' ? '请允许麦克风权限' : e.message), 'error');
+    showChat('麦克风权限被拒绝', 'user');
     resetState();
-    setStatus('已连接', 'connected');
     return;
   }
 
-  try {
-    audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
-    const source = audioContext.createMediaStreamSource(mediaStream);
+  audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+  const source = audioContext.createMediaStreamSource(mediaStream);
 
-    // Analyser for visualization
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    source.connect(analyser);
+  analyser = audioContext.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
 
-    // Processor for PCM extraction
-    processor = audioContext.createScriptProcessor(CHUNK_SAMPLES, 1, 1);
-    processor.onaudioprocess = (e) => {
-      if (state !== 'recording' || !ws || ws.readyState !== WebSocket.OPEN) return;
-      const float32 = e.inputBuffer.getChannelData(0);
-      const pcm16 = new Int16Array(float32.length);
-      for (let i = 0; i < float32.length; i++) {
-        pcm16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32767));
-      }
-      const frame = new Uint8Array(5 + pcm16.length * 2);
-      frame[0] = 0x01;
-      new DataView(frame.buffer).setUint32(1, turnId, true);
-      frame.set(new Uint8Array(pcm16.buffer), 5);
-      ws.send(frame);
-    };
+  processor = audioContext.createScriptProcessor(CHUNK_SAMPLES, 1, 1);
+  processor.onaudioprocess = (e) => {
+    if (state !== 'recording') return;
 
-    source.connect(processor);
-    processor.connect(audioContext.destination);
-    updateViz(); // Start visualization loop
-  } catch(e) {
-    addMsg('音频初始化失败: ' + e.message, 'error');
-    resetState();
-    setStatus('已连接', 'connected');
-  }
+    // Calculate RMS for particle level
+    const float32 = e.inputBuffer.getChannelData(0);
+    let sum = 0;
+    for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
+    const rms = Math.sqrt(sum / float32.length);
+    targetAudioLevel = Math.min(100, rms * 500);
+
+    // Send PCM to server
+    const pcm16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      pcm16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32767));
+    }
+    const frame = new Uint8Array(5 + pcm16.length * 2);
+    frame[0] = 0x01;
+    new DataView(frame.buffer).setUint32(1, turnId, true);
+    frame.set(new Uint8Array(pcm16.buffer), 5);
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame);
+  };
+
+  source.connect(processor);
+  processor.connect(audioContext.destination);
 }
 
 function stopRecording() {
   if (processor) { try { processor.disconnect(); } catch(e) {} processor = null; }
   if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
   analyser = null;
-  vizBars.forEach(b => b.style.height = '2px');
-  document.getElementById('volume-meter').textContent = '';
+  targetAudioLevel = 0;
 
   if (state !== 'recording') return;
   state = 'waiting';
-  setStatus('⏳ 等待回复...', 'waiting');
-  updateButtons();
+  setStatus('等待回复...', 'waiting');
+  document.getElementById('btn-record').classList.remove('active');
 
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'audio_done', turn_id: turnId }));
@@ -422,15 +613,25 @@ function cancelTurn() {
     ws.send(JSON.stringify({ type: 'cancel', turn_id: turnId }));
   }
   resetState();
-  setStatus('已连接', 'connected');
-  addMsg('已取消', 'system');
 }
 
-// Keyboard shortcut: Space to toggle recording
+function resetState() {
+  if (processor) { try { processor.disconnect(); } catch(e) {} processor = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  audioQueue = [];
+  if (isPlaying && audioContext) { try { audioContext.close(); } catch(e) {} isPlaying = false; }
+  targetAudioLevel = 0;
+  state = 'idle';
+  setStatus('JARVIS', 'idle');
+  document.getElementById('btn-record').classList.remove('active');
+  document.getElementById('btn-cancel').style.display = 'none';
+}
+
+// Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   if (e.code === 'Space') { e.preventDefault(); toggleRecord(); }
-  if (e.code === 'Escape' && state !== 'idle') { e.preventDefault(); cancelTurn(); }
+  if (e.code === 'Escape') { e.preventDefault(); cancelTurn(); }
 });
 </script>
 </body>
