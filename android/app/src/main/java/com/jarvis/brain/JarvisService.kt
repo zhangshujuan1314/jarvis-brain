@@ -151,11 +151,21 @@ class JarvisService : Service(), BrainClient.Listener, AudioManager.AudioListene
                     }
                 }
             }
-            wakeWordManager?.start()
-            Log.i(TAG, "wake word initialized")
+
+            val started = wakeWordManager?.start() ?: false
+            if (started) {
+                Log.i(TAG, "wake word active — say '贾维斯' to activate")
+                updateNotification("等待唤醒 (说「贾维斯」)")
+            } else if (wakeWordManager?.isConfigured == true) {
+                Log.w(TAG, "wake word configured but failed to start")
+                updateNotification("唤醒词启动失败 — 使用按钮触发")
+            } else {
+                Log.i(TAG, "wake word not configured — degraded to button-only mode")
+                updateNotification("就绪 (按钮触发模式)")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "wake word init failed: ${e.message}")
-            // Fall back: service runs without wake word (client uses button)
+            updateNotification("就绪 (按钮触发模式)")
         }
     }
 

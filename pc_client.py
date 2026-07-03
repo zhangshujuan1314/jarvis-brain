@@ -79,14 +79,16 @@ C_RESET = "\033[0m"
 
 
 class PCClient:
-    def __init__(self, uri: str):
+    def __init__(self, uri: str, use_wake_word: bool = False):
         self.uri = uri
+        self.use_wake_word = use_wake_word
         self.state = IDLE
         self.turn_id = 0
         self.ws = None
         self._audio_buf = bytearray()
         self._play_thread = None
         self._silence_count = 0  # M4.2: consecutive silence chunks
+        self._wake_detector = None
 
     async def run(self):
         """M4.1: Main loop with exponential backoff reconnection."""
@@ -105,6 +107,9 @@ class PCClient:
             ) as e:
                 self.state = IDLE
                 self._audio_buf.clear()
+                if self._wake_detector:
+                    self._wake_detector.stop()
+                    self._wake_detector = None
                 print(f"\n{C_RED}连接断开: {e}{C_RESET}")
                 print(f"{C_YELLOW}⏱ {backoff:.0f}s 后重连...{C_RESET}")
                 await asyncio.sleep(backoff)
@@ -134,6 +139,10 @@ class PCClient:
             print(f"{C_GREEN}✓ Connected & authenticated{C_RESET}")
             backoff = RECONNECT_INITIAL_S  # Reset on successful connect
 
+            # Start wake word detector if enabled
+            if self.use_wake_word:
+                self._init_wake_word(ws)
+
             # Start receiver task
             recv_task = asyncio.create_task(self._receiver(ws))
 
@@ -147,12 +156,35 @@ class PCClient:
             finally:
                 recv_task.cancel()
 
+    def _init_wake_word(self, ws):
+        """Initialize Porcupine wake word detector."""
+        try:
+            from wake_word import WakeWordDetector
+            loop = asyncio.get_running_loop()
+
+            def on_wake():
+                if self.state == IDLE:
+                    asyncio.run_coroutine_threadsafe(self._start_recording(ws), loop)
+
+            self._wake_detector = WakeWordDetector(on_wake=on_wake)
+            if self._wake_detector.start():
+                print(f"{C_GREEN}✓ 唤醒词已启用 — 说「贾维斯」激活{C_RESET}")
+            else:
+                print(f"{C_YELLOW}⚠ 唤醒词未配置 — 使用 Enter 键触发{C_RESET}")
+                self._wake_detector = None
+        except ImportError:
+            print(f"{C_YELLOW}⚠ pvporcupine 未安装 — 使用 Enter 键触发{C_RESET}")
+        except Exception as e:
+            print(f"{C_YELLOW}⚠ 唤醒词初始化失败: {e}{C_RESET}")
+
     async def _input_loop(self, ws):
+        wake_hint = "说「贾维斯」或" if self._wake_detector else ""
         while True:
             if self.state == IDLE:
-                print(f"\n{C_YELLOW}[Enter] 开始录音 | Ctrl+C 退出{C_RESET}")
+                print(f"\n{C_YELLOW}{wake_hint}[Enter] 开始录音 | Ctrl+C 退出{C_RESET}")
                 await asyncio.get_running_loop().run_in_executor(None, input)
-                await self._start_recording(ws)
+                if self.state == IDLE:  # Might have changed via wake word
+                    await self._start_recording(ws)
             elif self.state == RECORDING:
                 print(f"{C_YELLOW}[Enter] 停止录音{C_RESET}")
                 await asyncio.get_running_loop().run_in_executor(None, input)
@@ -327,8 +359,11 @@ class PCClient:
 
 
 async def main():
-    uri = sys.argv[1] if len(sys.argv) > 1 else URI
-    client = PCClient(uri)
+    args = sys.argv[1:]
+    use_wake = "--wake" in args
+    uri = [a for a in args if not a.startswith("--")]
+    uri = uri[0] if uri else URI
+    client = PCClient(uri, use_wake_word=use_wake)
     await client.run()
 
 
