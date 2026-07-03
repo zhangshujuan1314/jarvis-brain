@@ -15,13 +15,16 @@ MODEL_DIR = Path(__file__).parent / "models"
 
 
 def validate_all() -> bool:
-    """Run all validation checks. Returns True if all pass."""
+    """Run all validation checks. Returns True if all pass. Non-fatal."""
     checks = [
         _check_python_deps(),
         _check_api_keys(),
         _check_model_files(),
     ]
-    return all(checks)
+    ok = all(checks)
+    if not ok:
+        logger.warning("Some components unavailable — server will run in degraded mode")
+    return ok
 
 
 def _check_python_deps() -> bool:

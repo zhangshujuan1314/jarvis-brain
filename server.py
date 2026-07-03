@@ -18,12 +18,29 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from stt import STTEngine
-from llm import LLMEngine
-from tts import TTSEngine
 from config import validate_all, print_config_summary
 from structured_logging import setup_logging
 from plugins import PluginManager
+
+# Lazy imports — these may fail if deps are missing
+STTEngine = None
+LLMEngine = None
+TTSEngine = None
+
+try:
+    from stt import STTEngine
+except ImportError as e:
+    print(f"STT module not available: {e}")
+
+try:
+    from llm import LLMEngine
+except ImportError as e:
+    print(f"LLM module not available: {e}")
+
+try:
+    from tts import TTSEngine
+except ImportError as e:
+    print(f"TTS module not available: {e}")
 
 load_dotenv()
 setup_logging()
@@ -38,22 +55,46 @@ RATE_LIMIT_WINDOW = 60.0 # Rate limit window in seconds
 
 app = FastAPI(title="Jarvis Brain", version="0.4.0")
 
-# Startup validation
-if not validate_all():
-    logger.error("Configuration validation failed — check logs above")
-    sys.exit(1)
+# Startup validation (non-fatal — warn but continue)
+validate_all()
 print_config_summary()
 
-stt = STTEngine()
-tts = TTSEngine()
+# Initialize components (graceful degradation)
+stt = None
+if STTEngine:
+    try:
+        stt = STTEngine()
+    except Exception as e:
+        logger.warning("STT not available: %s", e)
+else:
+    logger.warning("STT module not imported")
 
-# Initialize plugin system
+tts = None
+if TTSEngine:
+    try:
+        tts = TTSEngine()
+    except Exception as e:
+        logger.warning("TTS not available: %s", e)
+else:
+    logger.warning("TTS module not imported")
+
+# Initialize plugin system (non-fatal)
 plugins = PluginManager()
-plugins.load_all()
+try:
+    plugins.load_all()
+except Exception as e:
+    logger.warning("plugin loading error: %s", e)
 
 # LLM with plugin tools
-llm = LLMEngine(extra_tools=plugins.tools)
-llm.set_executor(plugins.execute)  # Route tool calls through plugin manager
+llm = None
+if LLMEngine:
+    try:
+        llm = LLMEngine(extra_tools=plugins.tools)
+        llm.set_executor(plugins.execute)
+    except Exception as e:
+        logger.warning("LLM not available: %s", e)
+else:
+    logger.warning("LLM module not imported")
 
 logger.info("plugins loaded: %s", [p["name"] for p in plugins.list_plugins()])
 
@@ -81,7 +122,7 @@ class TurnManager:
         self.current_turn_id = turn_id
         self._finalized = False
         self._cancel_event.clear()
-        stt.start_turn()
+        if stt: stt.start_turn()
         return True
 
     def mark_finalized(self) -> bool:
@@ -268,9 +309,10 @@ if _static_dir.exists():
 async def health():
     return {
         "status": "ok",
-        "stt": "ready",
-        "llm": "ready",
-        "tts": "ready",
+        "stt": "ready" if stt else "unavailable",
+        "llm": "ready" if llm and llm._client else "unavailable",
+        "tts": "ready" if tts and hasattr(tts, '_api_key') and tts._api_key else "unavailable",
+        "plugins": len(plugins.tools),
         "devices": manager.count,
     }
 
@@ -462,6 +504,9 @@ async def _handle_audio(ws: WebSocket, device_id: str, data: bytes):
     pcm = data[5:]
 
     # Feed STT, check for utterance end
+    if not stt:
+        return  # STT not available
+
     utterance_done = stt.feed(pcm)
 
     if utterance_done and turn_mgr.mark_finalized():
@@ -476,6 +521,11 @@ async def _handle_audio(ws: WebSocket, device_id: str, data: bytes):
 async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
     """§7 pipeline: STT → LLM (streaming) → TTS (streaming) → client."""
     # 1. STT result
+    if not stt:
+        await _send(ws, {"type": "error", "turn_id": turn_id, "stage": "stt", "message": "STT not available"})
+        turn_mgr.release()
+        return
+
     seg = stt.pop()
     if seg is None:
         logger.warning("no speech segment for turn %d", turn_id)
@@ -497,6 +547,11 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
 
     # 2. LLM → TTS streaming pipeline
     if turn_mgr.is_cancelled:
+        turn_mgr.release()
+        return
+
+    if not llm:
+        await _send(ws, {"type": "error", "turn_id": turn_id, "stage": "llm", "message": "LLM not available"})
         turn_mgr.release()
         return
 
@@ -527,6 +582,9 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
 
             # Stream TTS audio for this sentence (per-sentence error recovery)
             try:
+                if not tts:
+                    logger.warning("TTS not available, skipping audio for: %s", sentence[:30])
+                    continue
                 async for audio_chunk in tts.speak(sentence):
                     if turn_mgr.is_cancelled:
                         break
