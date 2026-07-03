@@ -1,0 +1,10 @@
+# Android local configuration
+# Copy this file to local.properties and fill in your values
+# DO NOT commit local.properties to version control
+
+# Android SDK path (auto-detected by Android Studio)
+# sdk.dir=/path/to/android/sdk
+
+# Porcupine AccessKey for wake word detection
+# Get free key at: https://console.picovoice.ai/
+PORCUPINE_ACCESS_KEY=

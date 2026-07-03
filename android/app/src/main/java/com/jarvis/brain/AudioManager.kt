@@ -102,7 +102,11 @@ class AudioManager {
     fun stopRecording() {
         if (!isRecording) return
         isRecording = false
-        audioRecord?.stop()
+        try {
+            audioRecord?.stop()
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "AudioRecord stop error: ${e.message}")
+        }
         audioRecord?.release()
         audioRecord = null
         Log.i(TAG, "recording stopped (silence_chunks=$silenceCount)")

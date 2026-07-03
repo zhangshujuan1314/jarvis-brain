@@ -30,7 +30,14 @@ class JarvisService : Service(), BrainClient.Listener, AudioManager.AudioListene
         const val EXTRA_SERVER_URI = "server_uri"
         const val EXTRA_TOKEN = "token"
 
+        @Volatile
+        private var isRunning = false
+
         fun start(context: Context, serverUri: String, token: String) {
+            if (isRunning) {
+                Log.w(TAG, "service already running, ignoring start()")
+                return
+            }
             val intent = Intent(context, JarvisService::class.java).apply {
                 putExtra(EXTRA_SERVER_URI, serverUri)
                 putExtra(EXTRA_TOKEN, token)
@@ -43,6 +50,7 @@ class JarvisService : Service(), BrainClient.Listener, AudioManager.AudioListene
         }
 
         fun stop(context: Context) {
+            isRunning = false
             context.stopService(Intent(context, JarvisService::class.java))
         }
     }
@@ -60,6 +68,7 @@ class JarvisService : Service(), BrainClient.Listener, AudioManager.AudioListene
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("初始化中..."),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
@@ -120,6 +129,7 @@ class JarvisService : Service(), BrainClient.Listener, AudioManager.AudioListene
 
     override fun onDestroy() {
         Log.i(TAG, "service destroying")
+        isRunning = false
         wakeWordManager?.release()
         brainClient.disconnect()
         audioManager.release()
