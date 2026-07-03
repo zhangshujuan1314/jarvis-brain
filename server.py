@@ -100,17 +100,37 @@ turn_mgr = TurnManager()
 
 
 # ── Connection manager ────────────────────────────────────────────
-MAX_HISTORY = 20  # Max messages per device (balances context vs memory)
+MAX_HISTORY = 20  # Max messages in shared session history
+MAX_SYNC_TURNS = 3  # Max recent turns to send on device connect
 
 
 class ConnectionManager:
+    """Manages connected devices and shared session state.
+
+    M3 design: All devices share a SINGLE conversation history.
+    This enables cross-device continuity — device B can continue
+    a conversation started on device A.
+
+    On connect:
+      - New device gets the last MAX_SYNC_TURNS turns via session_sync
+      - Reconnecting device also gets recent context
+
+    On turn completion:
+      - Shared history updated
+      - session_sync broadcast to ALL other devices
+    """
+
     def __init__(self):
         self._devices: dict[str, WebSocket] = {}
-        self._history: dict[str, list[dict]] = {}  # Per-device conversation history
-        self._last_turn: dict[str, tuple[str, str]] = {}  # Last (user, assistant) per device
-        self._turn_times: dict[str, list[float]] = {}  # Rate limiting: turn timestamps
+        self._device_info: dict[str, dict] = {}  # platform, connected_at, etc.
+        # M3: SHARED session history (not per-device)
+        self._history: list[dict] = []
+        self._last_user_text: str = ""
+        self._last_assistant_text: str = ""
+        # Rate limiting
+        self._turn_times: dict[str, list[float]] = {}
 
-    async def register(self, ws: WebSocket, device_id: str):
+    async def register(self, ws: WebSocket, device_id: str, platform: str = "unknown"):
         old = self._devices.pop(device_id, None)
         if old:
             try:
@@ -118,63 +138,88 @@ class ConnectionManager:
             except Exception:
                 pass
         self._devices[device_id] = ws
-        # Preserve existing history if device reconnects
-        if device_id not in self._history:
-            self._history[device_id] = []
-        logger.info("device connected: %s", device_id)
+        self._device_info[device_id] = {
+            "platform": platform,
+            "connected_at": time.time(),
+        }
+        logger.info("device connected: %s (%s)", device_id, platform)
 
-        # M4.1: Send session_sync on reconnect (last turn context)
-        last = self.get_last_turn(device_id)
-        if last:
-            user_text, assistant_text = last
+        # M3: Send recent session history to newly connected device
+        await self._sync_history_to_device(ws, device_id)
+
+    async def _sync_history_to_device(self, ws: WebSocket, device_id: str):
+        """Send recent conversation history to a device (on connect/reconnect)."""
+        if not self._history:
+            return
+
+        # Send the last N turns
+        recent = self._history[-(MAX_SYNC_TURNS * 2):]  # *2 because user+assistant per turn
+        for i in range(0, len(recent) - 1, 2):
+            user_msg = recent[i]
+            asst_msg = recent[i + 1] if i + 1 < len(recent) else None
             try:
                 await _send(ws, {
                     "type": "session_sync",
                     "turn_id": 0,
-                    "user_text": user_text,
-                    "assistant_text": assistant_text,
+                    "user_text": user_msg.get("content", ""),
+                    "assistant_text": asst_msg.get("content", "") if asst_msg else "",
                 })
-                logger.info("session_sync sent to %s on reconnect", device_id)
             except Exception:
-                pass
+                break
+
+        logger.info("synced %d history entries to %s", len(recent), device_id)
 
     def remove(self, device_id: str):
         self._devices.pop(device_id, None)
-        # Keep history for a while (in case of reconnect)
+        self._device_info.pop(device_id, None)
         logger.info("device disconnected: %s", device_id)
 
     def get(self, device_id: str) -> Optional[WebSocket]:
         return self._devices.get(device_id)
 
-    def get_history(self, device_id: str) -> list[dict]:
-        return self._history.get(device_id, [])
+    def get_history(self) -> list[dict]:
+        """Get shared conversation history (for LLM context)."""
+        return list(self._history)
 
-    def add_history(self, device_id: str, user_text: str, assistant_text: str):
-        """Add a turn to conversation history, capping at MAX_HISTORY."""
-        if device_id not in self._history:
-            self._history[device_id] = []
-        h = self._history[device_id]
-        h.append({"role": "user", "content": user_text})
-        h.append({"role": "assistant", "content": assistant_text})
-        # Trim to keep last N messages
-        if len(h) > MAX_HISTORY:
-            self._history[device_id] = h[-MAX_HISTORY:]
-        # Store last turn for session_sync on reconnect
-        self._last_turn[device_id] = (user_text, assistant_text)
+    def add_history(self, user_text: str, assistant_text: str):
+        """Add a turn to SHARED conversation history."""
+        self._history.append({"role": "user", "content": user_text})
+        self._history.append({"role": "assistant", "content": assistant_text})
+        # Cap history
+        if len(self._history) > MAX_HISTORY:
+            self._history = self._history[-MAX_HISTORY:]
+        # Store last turn for quick access
+        self._last_user_text = user_text
+        self._last_assistant_text = assistant_text
 
-    def get_last_turn(self, device_id: str) -> tuple[str, str] | None:
-        """Get the last turn for session_sync on reconnect."""
-        return self._last_turn.get(device_id)
+    def get_last_turn(self) -> tuple[str, str] | None:
+        """Get the last (user_text, assistant_text) for session_sync."""
+        if self._last_user_text:
+            return (self._last_user_text, self._last_assistant_text)
+        return None
 
-    def clear_history(self, device_id: str):
-        self._history.pop(device_id, None)
+    def get_device_list(self) -> list[dict]:
+        """Get info about all connected devices."""
+        result = []
+        for did, info in self._device_info.items():
+            result.append({
+                "device_id": did,
+                "platform": info.get("platform", "unknown"),
+                "connected_at": info.get("connected_at", 0),
+            })
+        return result
+
+    def clear_history(self):
+        """Clear shared session history."""
+        self._history.clear()
+        self._last_user_text = ""
+        self._last_assistant_text = ""
 
     def check_rate_limit(self, device_id: str) -> bool:
         """Returns True if the device is within rate limits."""
         now = time.time()
         if device_id not in self._turn_times:
             self._turn_times[device_id] = []
-        # Clean old entries
         self._turn_times[device_id] = [
             t for t in self._turn_times[device_id] if now - t < RATE_LIMIT_WINDOW
         ]
@@ -221,8 +266,16 @@ async def health():
 
 @app.post("/history/{device_id}/clear")
 async def clear_history(device_id: str):
-    manager.clear_history(device_id)
-    return {"status": "ok", "message": f"history cleared for {device_id}"}
+    manager.clear_history()
+    return {"status": "ok", "message": "session history cleared"}
+
+@app.get("/devices")
+async def list_devices():
+    """List all connected devices (M3 monitoring)."""
+    return {
+        "devices": manager.get_device_list(),
+        "count": manager.count,
+    }
 
 
 # ── WS handler ────────────────────────────────────────────────────
@@ -231,11 +284,12 @@ async def ws_handler(ws: WebSocket):
     await ws.accept()
 
     # §6.1 Auth
-    device_id = await _do_auth(ws)
-    if device_id is None:
+    auth_result = await _do_auth(ws)
+    if auth_result is None:
         return
 
-    await manager.register(ws, device_id)
+    device_id, platform = auth_result
+    await manager.register(ws, device_id, platform)
 
     # Keepalive ping task
     async def _keepalive():
@@ -268,7 +322,8 @@ async def ws_handler(ws: WebSocket):
         manager.remove(device_id)
 
 
-async def _do_auth(ws: WebSocket) -> Optional[str]:
+async def _do_auth(ws: WebSocket) -> Optional[tuple[str, str]]:
+    """Authenticate WebSocket connection. Returns (device_id, platform) or None."""
     try:
         raw = await asyncio.wait_for(ws.receive_text(), timeout=AUTH_TIMEOUT)
     except asyncio.TimeoutError:
@@ -299,7 +354,7 @@ async def _do_auth(ws: WebSocket) -> Optional[str]:
     platform = msg.get("platform", "unknown")
     await _send(ws, {"type": "auth_ok", "server_time": int(time.time())})
     logger.info("auth ok: %s (%s)", did, platform)
-    return did
+    return (did, platform)
 
 
 # ── Text frame handler ────────────────────────────────────────────
@@ -429,7 +484,7 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
 
     await _send(ws, {"type": "state", "turn_id": turn_id, "value": "thinking"})
 
-    history = manager.get_history(device_id)
+    history = manager.get_history()
     tts_chunk_count = 0
     full_response = ""
 
@@ -492,7 +547,7 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
 
     # 3. Update conversation history & send done
     if full_response and not turn_mgr.is_cancelled:
-        manager.add_history(device_id, seg.text, full_response)
+        manager.add_history(seg.text, full_response)
 
     # 4. Broadcast session_sync for cross-device continuity (§6.2)
     if not turn_mgr.is_cancelled:
