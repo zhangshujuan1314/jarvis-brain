@@ -28,8 +28,9 @@ logger = logging.getLogger("jarvis-brain")
 
 JARVIS_TOKEN = os.environ.get("JARVIS_TOKEN", "dev-token-change-me")
 AUTH_TIMEOUT = 5.0
+WS_PING_INTERVAL = 30.0  # Send WS ping every 30s to keep connection alive
 
-app = FastAPI(title="Jarvis Brain", version="0.3.0")
+app = FastAPI(title="Jarvis Brain", version="0.4.0")
 
 stt = STTEngine()
 llm = LLMEngine()
@@ -197,6 +198,17 @@ async def ws_handler(ws: WebSocket):
 
     await manager.register(ws, device_id)
 
+    # Keepalive ping task
+    async def _keepalive():
+        while True:
+            await asyncio.sleep(WS_PING_INTERVAL)
+            try:
+                await ws.send_text(json.dumps({"type": "ping"}))
+            except Exception:
+                break
+
+    ping_task = asyncio.create_task(_keepalive())
+
     try:
         while True:
             data = await ws.receive()
@@ -211,6 +223,7 @@ async def ws_handler(ws: WebSocket):
     except Exception:
         logger.exception("error for device %s", device_id)
     finally:
+        ping_task.cancel()
         if turn_mgr.current_device == device_id:
             turn_mgr.release()
         manager.remove(device_id)
@@ -373,6 +386,10 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
     tts_chunk_count = 0
     full_response = ""
 
+    t_llm_start = time.time()
+    t_tts_start = None
+    tts_errors = 0
+
     try:
         async for sentence in llm.stream(seg.text, history=history):
             if turn_mgr.is_cancelled:
@@ -381,19 +398,26 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
 
             full_response += sentence
 
-            # First sentence: notify client that TTS is starting
+            # First sentence: notify client + record LLM→TTS transition
             if tts_chunk_count == 0:
+                t_tts_start = time.time()
+                llm_ms = (t_tts_start - t_llm_start) * 1000
                 await _send(ws, {"type": "state", "turn_id": turn_id, "value": "speaking"})
+                logger.info("turn %d: LLM first sentence in %.0fms", turn_id, llm_ms)
 
-            # Stream TTS audio for this sentence
-            async for audio_chunk in tts.speak(sentence):
-                if turn_mgr.is_cancelled:
-                    break
-                if audio_chunk:
-                    # §5 binary frame: [0x02][turn_id:4 LE][PCM data]
-                    frame = b"\x02" + struct.pack("<I", turn_id) + audio_chunk
-                    await ws.send_bytes(frame)
-                    tts_chunk_count += 1
+            # Stream TTS audio for this sentence (per-sentence error recovery)
+            try:
+                async for audio_chunk in tts.speak(sentence):
+                    if turn_mgr.is_cancelled:
+                        break
+                    if audio_chunk:
+                        frame = b"\x02" + struct.pack("<I", turn_id) + audio_chunk
+                        await ws.send_bytes(frame)
+                        tts_chunk_count += 1
+            except Exception as e:
+                tts_errors += 1
+                logger.warning("turn %d: TTS error for sentence %r: %s", turn_id, sentence, e)
+                # Continue with next sentence instead of failing the whole turn
 
             if turn_mgr.is_cancelled:
                 break
@@ -408,6 +432,16 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
         })
         turn_mgr.release()
         return
+
+    # Pipeline timing summary
+    t_end = time.time()
+    total_ms = (t_end - t_llm_start) * 1000
+    tts_ms = (t_end - t_tts_start) * 1000 if t_tts_start else 0
+    logger.info(
+        "turn %d: pipeline complete — total=%.0fms llm→tts=%.0fms tts=%.0fms chunks=%d tts_errors=%d",
+        turn_id, total_ms, (t_tts_start - t_llm_start) * 1000 if t_tts_start else 0,
+        tts_ms, tts_chunk_count, tts_errors,
+    )
 
     # 3. Update conversation history & send done
     if full_response and not turn_mgr.is_cancelled:
@@ -446,6 +480,19 @@ async def _broadcast_session_sync(
                 await _send(ws, sync_msg)
             except Exception:
                 pass  # Device might be disconnected
+
+
+# ── Lifecycle hooks ───────────────────────────────────────────────
+@app.on_event("shutdown")
+async def shutdown():
+    """Close all WebSocket connections on server shutdown."""
+    logger.info("shutting down, closing %d connections...", manager.count)
+    for did, ws in list(manager._devices.items()):
+        try:
+            await ws.close(code=1001, reason="server_shutdown")
+        except Exception:
+            pass
+    logger.info("shutdown complete")
 
 
 # ── Entry ─────────────────────────────────────────────────────────
