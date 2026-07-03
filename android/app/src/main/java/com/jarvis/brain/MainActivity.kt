@@ -1,27 +1,28 @@
 package com.jarvis.brain
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
 /**
- * Main activity — configuration UI + service control.
+ * Main activity — particle visualization + voice control.
  *
- * Minimal UI for v1:
- *   - Server URI input
- *   - Token input
- *   - Start/Stop service button
- *   - Status display
- *   - Battery optimization exemption button
+ * Full-screen particle background that reacts to voice.
+ * Minimal overlay: status text + record button + settings.
  */
 class MainActivity : AppCompatActivity() {
     companion object {
@@ -32,37 +33,53 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private lateinit var particleView: ParticleView
+    private lateinit var textStatus: TextView
+    private lateinit var btnRecord: Button
+    private lateinit var btnCancel: Button
+    private lateinit var btnSettings: Button
+    private lateinit var configPanel: LinearLayout
     private lateinit var editServerUri: EditText
     private lateinit var editToken: EditText
-    private lateinit var btnToggle: Button
-    private lateinit var btnBattery: Button
-    private lateinit var textStatus: TextView
-    private lateinit var textState: TextView
+    private lateinit var btnConnect: Button
 
     private var isServiceRunning = false
+    private var serviceBinder: JarvisService.LocalBinder? = null
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            serviceBinder = binder as? JarvisService.LocalBinder
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            serviceBinder = null
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        particleView = findViewById(R.id.particle_view)
+        textStatus = findViewById(R.id.text_status)
+        btnRecord = findViewById(R.id.btn_record)
+        btnCancel = findViewById(R.id.btn_cancel)
+        btnSettings = findViewById(R.id.btn_settings)
+        configPanel = findViewById(R.id.config_panel)
         editServerUri = findViewById(R.id.edit_server_uri)
         editToken = findViewById(R.id.edit_token)
-        btnToggle = findViewById(R.id.btn_toggle)
-        btnBattery = findViewById(R.id.btn_battery)
-        textStatus = findViewById(R.id.text_status)
-        textState = findViewById(R.id.text_state)
+        btnConnect = findViewById(R.id.btn_connect)
 
         // Load saved config
         val prefs = getSharedPreferences("jarvis", MODE_PRIVATE)
         editServerUri.setText(prefs.getString("server_uri", "wss://your-server/ws"))
         editToken.setText(prefs.getString("token", ""))
 
-        btnToggle.setOnClickListener { toggleService() }
-        btnBattery.setOnClickListener { requestBatteryExemption() }
+        btnRecord.setOnClickListener { toggleRecording() }
+        btnCancel.setOnClickListener { cancelTurn() }
+        btnSettings.setOnClickListener { configPanel.visibility = if (configPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
+        btnConnect.setOnClickListener { toggleService() }
 
-        // Check permissions
         requestPermissions()
-
         updateUI()
     }
 
@@ -75,39 +92,52 @@ class MainActivity : AppCompatActivity() {
         if (isServiceRunning) {
             JarvisService.stop(this)
             isServiceRunning = false
+            particleView.setState("idle")
         } else {
             val uri = editServerUri.text.toString().trim()
             val token = editToken.text.toString().trim()
-
             if (uri.isEmpty() || token.isEmpty()) {
                 Toast.makeText(this, "请填写服务器地址和 Token", Toast.LENGTH_SHORT).show()
                 return
             }
-
-            // Save config
             getSharedPreferences("jarvis", MODE_PRIVATE).edit()
                 .putString("server_uri", uri)
                 .putString("token", token)
                 .apply()
-
             JarvisService.start(this, uri, token)
             isServiceRunning = true
+            configPanel.visibility = View.GONE
         }
         updateUI()
     }
 
-    private fun requestBatteryExemption() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val pm = getSystemService(POWER_SERVICE) as PowerManager
-            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                }
-                startActivity(intent)
-            } else {
-                Toast.makeText(this, "已忽略电池优化", Toast.LENGTH_SHORT).show()
-            }
+    private fun toggleRecording() {
+        // Toggle via service broadcast or direct action
+        if (!isServiceRunning) {
+            Toast.makeText(this, "请先启动服务", Toast.LENGTH_SHORT).show()
+            return
         }
+        // The service handles recording via wake word or button
+        // For button mode, send a broadcast
+        val intent = Intent("com.jarvis.brain.TOGGLE_RECORDING")
+        sendBroadcast(intent)
+    }
+
+    private fun cancelTurn() {
+        val intent = Intent("com.jarvis.brain.CANCEL")
+        sendBroadcast(intent)
+        particleView.setState("idle")
+        particleView.setAudioLevel(0f)
+    }
+
+    /** Called by service to update particle state. */
+    fun updateParticleState(state: String) {
+        particleView.setState(state)
+    }
+
+    /** Called by service to update audio level. */
+    fun updateAudioLevel(level: Float) {
+        particleView.setAudioLevel(level)
     }
 
     private fun requestPermissions() {
@@ -134,12 +164,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUI() {
-        btnToggle.text = if (isServiceRunning) "停止服务" else "启动服务"
-        textStatus.text = if (isServiceRunning) "运行中" else "已停止"
-        textStatus.setTextColor(ContextCompat.getColor(this,
-            if (isServiceRunning) android.R.color.holo_green_dark else android.R.color.holo_red_dark
-        ))
-        editServerUri.isEnabled = !isServiceRunning
-        editToken.isEnabled = !isServiceRunning
+        if (isServiceRunning) {
+            textStatus.text = "JARVIS"
+            textStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+            btnRecord.isEnabled = true
+        } else {
+            textStatus.text = "JARVIS"
+            textStatus.setTextColor(ContextCompat.getColor(this, android.R.color.darker_gray))
+            btnRecord.isEnabled = false
+        }
     }
 }

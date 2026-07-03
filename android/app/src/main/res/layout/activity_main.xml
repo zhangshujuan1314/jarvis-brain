@@ -1,132 +1,125 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:background="#0a0a0f">
+    android:background="#000000">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="🧠 Jarvis"
-        android:textSize="28sp"
-        android:textColor="#4f8cff"
-        android:textStyle="bold"
-        android:layout_gravity="center"
-        android:layout_marginBottom="8dp" />
+    <!-- Particle visualization (full screen background) -->
+    <com.jarvis.brain.ParticleView
+        android:id="@+id/particle_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="语音助手"
-        android:textSize="14sp"
-        android:textColor="#666"
-        android:layout_gravity="center"
-        android:layout_marginBottom="32dp" />
-
-    <!-- Status -->
+    <!-- UI overlay -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:layout_marginBottom="24dp">
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:gravity="bottom">
 
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="状态"
-            android:textColor="#888"
-            android:textSize="14sp" />
-
+        <!-- Status -->
         <TextView
             android:id="@+id/text_status"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="已停止"
-            android:textColor="#ef4444"
-            android:textSize="14sp"
-            android:textStyle="bold" />
+            android:text="JARVIS"
+            android:textColor="#4f8cff"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="8dp"
+            android:shadowColor="#4f8cff"
+            android:shadowDx="0"
+            android:shadowDy="0"
+            android:shadowRadius="20" />
+
+        <!-- Config (collapsible) -->
+        <LinearLayout
+            android:id="@+id/config_panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#12121a"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/edit_server_uri"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:hint="wss://your-server/ws"
+                android:textColor="#e2e2e2"
+                android:textColorHint="#444"
+                android:background="@drawable/edit_bg"
+                android:padding="12dp"
+                android:textSize="13sp"
+                android:inputType="textUri"
+                android:singleLine="true"
+                android:layout_marginBottom="8dp" />
+
+            <EditText
+                android:id="@+id/edit_token"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:hint="token"
+                android:textColor="#e2e2e2"
+                android:textColorHint="#444"
+                android:background="@drawable/edit_bg"
+                android:padding="12dp"
+                android:textSize="13sp"
+                android:inputType="textPassword"
+                android:singleLine="true"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_connect"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:text="连接"
+                android:textSize="13sp"
+                android:backgroundTint="#4f8cff"
+                android:textColor="#000" />
+        </LinearLayout>
+
+        <!-- Main button -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:layout_marginBottom="24dp">
+
+            <Button
+                android:id="@+id/btn_settings"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:text="⚙"
+                android:textSize="18sp"
+                android:backgroundTint="#1a1a2e"
+                android:textColor="#666"
+                android:layout_marginEnd="16dp" />
+
+            <Button
+                android:id="@+id/btn_record"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:text="🎤"
+                android:textSize="28sp"
+                android:backgroundTint="#0a2a0a"
+                android:textColor="#22c55e" />
+
+            <Button
+                android:id="@+id/btn_cancel"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:text="✕"
+                android:textSize="18sp"
+                android:backgroundTint="#1a1a2e"
+                android:textColor="#666"
+                android:layout_marginStart="16dp"
+                android:visibility="gone" />
+        </LinearLayout>
+
     </LinearLayout>
-
-    <!-- State machine display -->
-    <TextView
-        android:id="@+id/text_state"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="IDLE"
-        android:textColor="#444"
-        android:textSize="12sp"
-        android:layout_marginBottom="24dp" />
-
-    <!-- Server URI -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="服务器地址"
-        android:textColor="#888"
-        android:textSize="12sp"
-        android:layout_marginBottom="4dp" />
-
-    <EditText
-        android:id="@+id/edit_server_uri"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:hint="wss://your-server/ws"
-        android:textColor="#e2e2e2"
-        android:textColorHint="#444"
-        android:background="@drawable/edit_bg"
-        android:padding="12dp"
-        android:textSize="14sp"
-        android:inputType="textUri"
-        android:singleLine="true"
-        android:layout_marginBottom="16dp" />
-
-    <!-- Token -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Token"
-        android:textColor="#888"
-        android:textSize="12sp"
-        android:layout_marginBottom="4dp" />
-
-    <EditText
-        android:id="@+id/edit_token"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:hint="your-token"
-        android:textColor="#e2e2e2"
-        android:textColorHint="#444"
-        android:background="@drawable/edit_bg"
-        android:padding="12dp"
-        android:textSize="14sp"
-        android:inputType="textPassword"
-        android:singleLine="true"
-        android:layout_marginBottom="32dp" />
-
-    <!-- Buttons -->
-    <Button
-        android:id="@+id/btn_toggle"
-        android:layout_width="match_parent"
-        android:layout_height="52dp"
-        android:text="启动服务"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:backgroundTint="#22c55e"
-        android:textColor="#000"
-        android:layout_marginBottom="12dp" />
-
-    <Button
-        android:id="@+id/btn_battery"
-        android:layout_width="match_parent"
-        android:layout_height="44dp"
-        android:text="忽略电池优化"
-        android:textSize="13sp"
-        android:backgroundTint="#333"
-        android:textColor="#888"
-        style="?android:attr/borderlessButtonStyle" />
-
-</LinearLayout>
+</FrameLayout>

@@ -79,9 +79,10 @@ C_RESET = "\033[0m"
 
 
 class PCClient:
-    def __init__(self, uri: str, use_wake_word: bool = False):
+    def __init__(self, uri: str, use_wake_word: bool = False, use_particles: bool = False):
         self.uri = uri
         self.use_wake_word = use_wake_word
+        self.use_particles = use_particles
         self.state = IDLE
         self.turn_id = 0
         self.ws = None
@@ -89,6 +90,7 @@ class PCClient:
         self._play_thread = None
         self._silence_count = 0  # M4.2: consecutive silence chunks
         self._wake_detector = None
+        self._particle_window = None
 
     async def run(self):
         """M4.1: Main loop with exponential backoff reconnection."""
@@ -139,6 +141,10 @@ class PCClient:
             print(f"{C_GREEN}✓ Connected & authenticated{C_RESET}")
             backoff = RECONNECT_INITIAL_S  # Reset on successful connect
 
+            # Start particle window if enabled
+            if self.use_particles:
+                self._init_particles()
+
             # Start wake word detector if enabled
             if self.use_wake_word:
                 self._init_wake_word(ws)
@@ -155,6 +161,26 @@ class PCClient:
                 return
             finally:
                 recv_task.cancel()
+
+    def _init_particles(self):
+        """Initialize particle visualization window."""
+        try:
+            from particle_window import ParticleWindow
+            self._particle_window = ParticleWindow()
+            if self._particle_window.start():
+                print(f"{C_GREEN}✓ 粒子窗口已打开{C_RESET}")
+            else:
+                print(f"{C_YELLOW}⚠ 粒子窗口不可用 (需要 tkinter){C_RESET}")
+                self._particle_window = None
+        except Exception as e:
+            print(f"{C_YELLOW}⚠ 粒子窗口初始化失败: {e}{C_RESET}")
+
+    def _update_particles(self, state: str = None, level: float = 0):
+        """Update particle window state and audio level."""
+        if self._particle_window:
+            if state:
+                self._particle_window.set_state(state)
+            self._particle_window.set_level(level)
 
     def _init_wake_word(self, ws):
         """Initialize Porcupine wake word detector."""
@@ -198,6 +224,7 @@ class PCClient:
         self.turn_id += 1
         self.state = RECORDING
         self._silence_count = 0
+        self._update_particles("recording")
         print(f"{C_GREEN}● 录音中... (再说按 Enter 停止，最长 {MAX_RECORD_S}s){C_RESET}")
 
         # Send wake event
@@ -252,6 +279,7 @@ class PCClient:
         if self.state != RECORDING:
             return
         self.state = WAITING
+        self._update_particles("waiting")
         print(f"{C_CYAN}⏳ 等待回复...{C_RESET}")
         await ws.send(json.dumps({"type": "audio_done", "turn_id": self.turn_id}))
 
@@ -261,6 +289,7 @@ class PCClient:
         await ws.send(json.dumps({"type": "cancel", "turn_id": self.turn_id}))
         self.state = IDLE
         self._audio_buf.clear()
+        self._update_particles("idle")
 
     async def _receiver(self, ws):
         """Receive and handle server messages."""
@@ -292,11 +321,14 @@ class PCClient:
                     val = msg.get("value", "")
                     if val == "thinking":
                         print(f"{C_CYAN}🧠 思考中...{C_RESET}")
+                        self._update_particles("waiting")
                     elif val == "speaking":
                         print(f"{C_GREEN}🔊 播放中...{C_RESET}")
                         self.state = PLAYING
+                        self._update_particles("playing")
                     elif val == "cancelled":
                         self.state = IDLE
+                        self._update_particles("idle")
                 elif mtype == "tts_done":
                     # Flush any remaining buffered audio
                     self._flush_audio()
@@ -304,10 +336,12 @@ class PCClient:
                     if self._play_thread and self._play_thread.is_alive():
                         self._play_thread.join()
                     self.state = IDLE
+                    self._update_particles("idle")
                     print(f"{C_DIM}✓ 回复完毕{C_RESET}")
                 elif mtype == "error":
                     print(f"{C_RED}✗ 错误 [{msg.get('stage')}]: {msg.get('message')}{C_RESET}")
                     self.state = IDLE
+                    self._update_particles("idle")
                 elif mtype == "session_sync":
                     # M4.1: Show synced context from other device or reconnect
                     user = msg.get("user_text", "")
@@ -361,9 +395,10 @@ class PCClient:
 async def main():
     args = sys.argv[1:]
     use_wake = "--wake" in args
-    uri = [a for a in args if not a.startswith("--")]
+    use_particles = "--particles" in args or "-p" in args
+    uri = [a for a in args if not a.startswith("--") and a != "-p"]
     uri = uri[0] if uri else URI
-    client = PCClient(uri, use_wake_word=use_wake)
+    client = PCClient(uri, use_wake_word=use_wake, use_particles=use_particles)
     await client.run()
 
 
