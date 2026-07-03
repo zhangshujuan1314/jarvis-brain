@@ -451,7 +451,7 @@ function handleMsg(msg) {
     case 'state':
       if (msg.value === 'thinking') { state = 'waiting'; setStatus('思考中...', 'waiting'); }
       else if (msg.value === 'speaking') { state = 'playing'; setStatus(' speaking', 'playing'); initPlayback(); }
-      else if (msg.value === 'cancelled') { resetState(); }
+      else if (msg.value === 'cancelled' || msg.value === 'done') { resetState(); }
       break;
     case 'tts_done':
       playQueue();

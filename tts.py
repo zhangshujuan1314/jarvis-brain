@@ -1,63 +1,49 @@
 """
-M1.4 TTS engine: ElevenLabs eleven_flash_v2_5 WebSocket streaming.
+M1.4 TTS engine: mimo-v2.5-tts via OpenAI-compatible API.
+
+Supports any OpenAI-compatible TTS endpoint (mimo, OpenAI, etc.).
 
 Design:
-- WebSocket streaming for low latency (~75ms synthesis)
-- Output format: pcm_16000 (16kHz PCM, matches our audio pipeline)
-- No external SDK dependency — raw websockets for minimal footprint
-- Async generator yields PCM chunks for streaming to client
-
-Protocol (ElevenLabs WebSocket v1):
-  → {"text": "...", "voice_settings": {...}}   (text input)
-  → {"text": ""}                                (end of input)
-  ← {"audio": "<base64>", ...}                  (audio chunk)
-  ← {"isFinal": true}                           (done)
+- HTTP streaming for low latency
+- Output format: PCM 16kHz (matches audio pipeline)
+- Async generator yields PCM chunks
 """
 from __future__ import annotations
 
-import asyncio
-import base64
-import json
 import logging
 import os
 from typing import AsyncGenerator
 
-import websockets
+import httpx
 
 logger = logging.getLogger(__name__)
 
-TTS_WS_URL = "wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input"
-
 
 class TTSEngine:
-    """ElevenLabs streaming TTS via WebSocket."""
+    """OpenAI-compatible TTS via HTTP streaming."""
 
     def __init__(
         self,
         api_key: str | None = None,
-        voice_id: str | None = None,
+        api_base: str | None = None,
+        model: str | None = None,
+        voice: str | None = None,
     ):
-        self._api_key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
-        self._voice_id = voice_id or os.environ.get(
-            "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"
-        )
+        self._api_key = api_key or os.environ.get("TTS_API_KEY", os.environ.get("LLM_API_KEY", ""))
+        self._api_base = api_base or os.environ.get("TTS_API_BASE", os.environ.get("LLM_API_BASE", "https://api.xiaomimimo.com/v1"))
+        self._model = model or os.environ.get("TTS_MODEL", "mimo-v2.5-tts")
+        self._voice = voice or os.environ.get("TTS_VOICE", "alloy")
 
         if not self._api_key:
-            logger.warning("ELEVENLABS_API_KEY not set — TTS will fail")
+            logger.warning("TTS_API_KEY not set — TTS will fail")
 
-        logger.info("TTS ready: voice=%s", self._voice_id)
+        logger.info("TTS ready: model=%s, voice=%s", self._model, self._voice)
 
     async def speak(self, text: str) -> AsyncGenerator[bytes, None]:
         """
         Synthesize text to PCM audio (16kHz, 16-bit, mono).
 
         Yields raw PCM chunks for streaming to client via WS binary frames.
-
-        Args:
-            text: Text to synthesize (should be a complete sentence)
-
-        Yields:
-            PCM audio bytes (16kHz, 16-bit, mono)
         """
         if not self._api_key:
             logger.error("TTS skipped: no API key")
@@ -66,67 +52,35 @@ class TTSEngine:
         if not text.strip():
             return
 
-        url = (
-            f"wss://api.elevenlabs.io/v1/text-to-speech/{self._voice_id}/stream-input"
-            f"?model_id=eleven_flash_v2_5&output_format=pcm_16000"
-        )
-        headers = {"xi-api-key": self._api_key}
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": self._model,
+            "input": text,
+            "voice": self._voice,
+            "response_format": "pcm",
+            "speed": 1.0,
+        }
 
         try:
-            async with websockets.connect(url, additional_headers=headers) as ws:
-                # Send BOS (beginning of stream) with voice settings
-                await ws.send(json.dumps({
-                    "text": " ",
-                    "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.75,
-                    },
-                    "xi-api-key": self._api_key,
-                }))
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self._api_base}/audio/speech",
+                    json=payload,
+                    headers=headers,
+                ) as resp:
+                    resp.raise_for_status()
+                    async for chunk in resp.aiter_bytes(chunk_size=4096):
+                        if chunk:
+                            yield chunk
 
-                # Send the actual text
-                await ws.send(json.dumps({"text": text}))
-
-                # Send EOS (end of stream)
-                await ws.send(json.dumps({"text": ""}))
-
-                # Receive and yield audio chunks as they arrive (true streaming)
-                # 8s timeout per message (§9: TTS first packet 8s timeout)
-                deadline = asyncio.get_running_loop().time() + 8.0
-                while True:
-                    try:
-                        remaining = deadline - asyncio.get_running_loop().time()
-                        if remaining <= 0:
-                            logger.error("TTS timeout: no response within 8s")
-                            return
-                        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                    except asyncio.TimeoutError:
-                        logger.error("TTS timeout waiting for next message")
-                        return
-
-                    if isinstance(raw, bytes):
-                        yield raw
-                        continue
-
-                    try:
-                        msg = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-
-                    if "audio" in msg and msg["audio"]:
-                        yield base64.b64decode(msg["audio"])
-
-                    if msg.get("error"):
-                        logger.error("TTS API error: %s", msg["error"])
-                        return
-
-                    if msg.get("isFinal"):
-                        return
-
-                    # Reset deadline after first successful message
-                    deadline = asyncio.get_running_loop().time() + 8.0
-
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.error("TTS WebSocket closed: %s", e)
+        except httpx.HTTPStatusError as e:
+            logger.error("TTS API error: %s %s", e.response.status_code, e.response.text[:200])
+        except httpx.TimeoutException:
+            logger.error("TTS timeout")
         except Exception as e:
             logger.error("TTS error: %s", e)

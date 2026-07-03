@@ -310,8 +310,8 @@ async def health():
     return {
         "status": "ok",
         "stt": "ready" if stt else "unavailable",
-        "llm": "ready" if llm and llm._client else "unavailable",
-        "tts": "ready" if tts and hasattr(tts, '_api_key') and tts._api_key else "unavailable",
+        "llm": "ready" if llm and llm._api_key else "unavailable",
+        "tts": "ready" if tts and tts._api_key else "unavailable",
         "plugins": len(plugins.tools),
         "devices": manager.count,
     }
@@ -529,6 +529,8 @@ async def _finalize_turn(ws: WebSocket, device_id: str, turn_id: int):
     seg = stt.pop()
     if seg is None:
         logger.warning("no speech segment for turn %d", turn_id)
+        await _send(ws, {"type": "stt_result", "turn_id": turn_id, "text": ""})
+        await _send(ws, {"type": "state", "turn_id": turn_id, "value": "done"})
         turn_mgr.release()
         return
 
