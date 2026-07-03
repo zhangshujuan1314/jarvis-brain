@@ -91,6 +91,14 @@ python pc_client.py wss://your-vps/ws      # 远程 VPS
 
 断线自动重连（指数退避 1s → 30s）。
 
+## Web 客户端
+
+浏览器直接访问 `http://your-server:8000/`，无需安装任何软件。
+
+- Web Audio API 录音 → WebSocket 传输 → AudioContext 播放
+- 支持 Chrome / Firefox / Edge（桌面）
+- 实时状态显示：空闲 / 录音中 / 思考中 / 播放中
+
 ## 工具集
 
 | 工具 | 功能 | API |
@@ -141,8 +149,11 @@ jarvis-brain/
 ├── stt.py             # STT 引擎：sherpa-onnx + Silero VAD
 ├── llm.py             # LLM 引擎：Claude API 流式 + Tool Calling
 ├── tts.py             # TTS 引擎：ElevenLabs WebSocket 流式
-├── tools.py           # 工具定义与执行
+├── tools.py           # 工具定义与执行（天气/计算/日期/搜索）
+├── config.py          # 启动配置校验
 ├── pc_client.py       # PC 客户端（录音 + 播放 + 重连）
+├── static/
+│   └── index.html     # Web 客户端（浏览器语音交互）
 ├── download_models.py # STT 模型下载脚本
 ├── test_client.py     # WS 连通性测试
 ├── test_stt.py        # STT 管线测试
